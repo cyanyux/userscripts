@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide AI disclaimers
 // @namespace    https://chatgpt.com/
-// @version      1.5.7
+// @version      1.5.8
 // @description  Hide disclaimer containers on ChatGPT, Gemini, and Claude
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -37,26 +37,43 @@
     border: 0 !important;
   `;
 
+  /* Claude's disclaimer lives inside a sticky container with
+     transparent background. visibility:hidden kills the bg too,
+     letting scrolling content bleed through the 8px gap.
+     Hide text with font-size/color instead, keeping the bg. */
+  const SOFT_HIDE_OPAQUE = `
+    display: block !important;
+    pointer-events: none !important;
+    box-sizing: border-box !important;
+    height: ${SOFT_GAP} !important;
+    min-height: ${SOFT_GAP} !important;
+    max-height: ${SOFT_GAP} !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    color: transparent !important;
+  `;
+
   const cssByHost = {
     'chatgpt.com': CHATGPT_CSS,
     'chat.openai.com': CHATGPT_CSS,
-
     'gemini.google.com': `
       hallucination-disclaimer {
         ${SOFT_HIDE}
       }
     `,
-
     'claude.ai': `
       [role="note"][data-disclaimer="true"] {
-        ${SOFT_HIDE}
+        ${SOFT_HIDE_OPAQUE}
       }
     `
   };
 
   const css = cssByHost[location.hostname];
   if (!css) return;
-
   if (document.getElementById(STYLE_ID)) return;
 
   const parent = document.head || document.documentElement;
