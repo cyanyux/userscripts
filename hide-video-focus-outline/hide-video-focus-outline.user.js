@@ -29,10 +29,10 @@
   // box coincide closely. Tuned for the X overlay and Coursera wrapper, which
   // the video nearly fills; the thresholds exclude small controls and larger
   // containers that merely wrap the video plus other content.
-  const COVER_VIDEO = 0.6;  // candidate must cover >= 60% of the video's box
-  const COVER_SELF = 0.75;  // video must cover >= 75% of the candidate's box
+  const COVER_VIDEO = 0.6; // candidate must cover >= 60% of the video's box
+  const COVER_SELF = 0.75; // video must cover >= 75% of the candidate's box
 
-  const DEBOUNCE_MS = 250;  // coalesce re-scans triggered by DOM changes
+  const DEBOUNCE_MS = 250; // coalesce re-scans triggered by DOM changes
   const ATTR = 'data-hide-video-outline';
 
   /* ----------------------------------------------------------------------
