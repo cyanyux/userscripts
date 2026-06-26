@@ -9,6 +9,8 @@
 // @match        https://claude.ai/*
 // @run-at       document-start
 // @grant        none
+// @downloadURL  https://github.com/cyanyux/userscripts/raw/main/hide-ai-disclaimers/hide-ai-disclaimers.user.js
+// @updateURL    https://github.com/cyanyux/userscripts/raw/main/hide-ai-disclaimers/hide-ai-disclaimers.user.js
 // ==/UserScript==
 
 (() => {

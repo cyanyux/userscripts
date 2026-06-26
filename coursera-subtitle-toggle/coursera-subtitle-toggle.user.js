@@ -5,6 +5,8 @@
 // @description  Press C to toggle subtitles on/off on Coursera video lectures
 // @match        https://www.coursera.org/learn/*
 // @grant        none
+// @downloadURL  https://github.com/cyanyux/userscripts/raw/main/coursera-subtitle-toggle/coursera-subtitle-toggle.user.js
+// @updateURL    https://github.com/cyanyux/userscripts/raw/main/coursera-subtitle-toggle/coursera-subtitle-toggle.user.js
 // ==/UserScript==
 
 (function() {

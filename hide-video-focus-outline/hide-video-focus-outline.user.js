@@ -6,6 +6,8 @@
 // @match        *://*/*
 // @run-at       document-start
 // @grant        none
+// @downloadURL  https://github.com/cyanyux/userscripts/raw/main/hide-video-focus-outline/hide-video-focus-outline.user.js
+// @updateURL    https://github.com/cyanyux/userscripts/raw/main/hide-video-focus-outline/hide-video-focus-outline.user.js
 // ==/UserScript==
 (function () {
   'use strict';
