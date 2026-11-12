@@ -15,7 +15,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   function notify(target, record) {
     for (const observer of observers) observer.notify(target, record);
   }
-  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
+  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
   const state = { model: 'Hydrogen', thinkingReady, highReady, cleanupThrows: false };
   const location = { href: 'https://gemini.google.com/app' };
   const document = {
@@ -27,7 +27,12 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     getElementById(id) { return [root, submenu, dialog].find(menu => menu.attrs.id === String(id)) || null; },
     querySelector() { stats.pickerQueries++; return state.pickerMissing ? null : picker; },
-    querySelectorAll() { return [root, submenu, dialog]; },
+    querySelectorAll(selector) {
+      return [root, submenu, dialog].filter(element =>
+        selector.includes('[role="' + element.getAttribute('role') + '"]')
+        || (selector.includes('[aria-modal="true"]') && element.getAttribute('aria-modal') === 'true')
+        || (selector.includes('dialog[open]') && element.tagName === 'DIALOG' && element.getAttribute('open') !== null));
+    },
     createElement() {
       return { remove() { stats.styles.delete(this); } };
     },
@@ -109,6 +114,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   }
   function wirePicker() {
     picker.click = () => {
+      stats.pickerClicks++;
       if (root.shown) {
         if (state.cleanupThrows) throw new Error('Simulated cleanup exception');
         close();
@@ -124,7 +130,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       }
     };
   }
-  thinking.click = () => { submenu.shown = true; document.activeElement = high; };
+  thinking.click = () => { stats.thinkingClicks++; submenu.shown = true; document.activeElement = high; };
   high.click = () => {
     stats.highClicks.push({ openedFor: state.openedFor, url: location.href });
     setLabel(true);
@@ -230,7 +236,7 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.1');
+  assert.equal(h.version(), '1.4.2');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -486,4 +492,125 @@ test('reinjection during a pending switch cancels queued observers and the old r
   await h.advance(0);
   assert.equal(h.stats.styles.size, 0);
   assert.equal(h.timers.size, 0);
+});
+
+// Queue a component update after a successful probe but before its await resumes.
+function afterProbe(element, mutate) {
+  const check = element.checkVisibility.bind(element);
+  let queued = false;
+  element.checkVisibility = () => {
+    const result = check();
+    if (result && !queued) {
+      queued = true;
+      queueMicrotask(mutate);
+    }
+    return result;
+  };
+}
+
+for (const stage of ['thinking', 'high']) {
+  for (const change of ['detach', 'disable', 'move', 'relabel', 'role']) {
+    test(`does not click a stale ${stage} option after ${change} between probe and continuation`, async () => {
+      const h = harness();
+      const option = h[stage];
+      afterProbe(option, () => {
+        if (change === 'detach') option.isConnected = false;
+        if (change === 'disable') option.setAttribute('aria-disabled', 'true');
+        if (change === 'relabel') option.textContent = 'Unrelated option';
+        if (change === 'role') option.setAttribute('role', 'button');
+        if (change === 'move') {
+          option.parent.children = option.parent.children.filter(child => child !== option);
+          option.parent = h.control();
+          option.parent.setAttribute('role', 'menu');
+          option.parent.children.push(option);
+        }
+      });
+      await h.advance(0);
+      assert.equal(stage === 'high' ? h.stats.highClicks.length : h.stats.thinkingClicks, 0);
+      assert.equal(h.isHigh(), false);
+      assert.equal(h.autoStyleCount(), 0);
+      h.stop();
+    });
+  }
+}
+
+for (const popup of ['dialog', 'alertdialog', 'native-dialog', 'menu']) {
+  test(`cancels a pending switch when an unrelated ${popup} appears without stealing focus`, async () => {
+    const h = harness({ highReady: false });
+    await h.advance(0);
+    const clicks = h.stats.pickerClicks;
+    if (popup === 'native-dialog') {
+      h.dialog.removeAttribute('role');
+      h.dialog.tagName = 'DIALOG';
+      h.dialog.setAttribute('open', '');
+    } else h.dialog.setAttribute('role', popup);
+    h.dialog.shown = true;
+    h.dialog.focus();
+    h.state.highReady = true;
+    h.mutate(h.submenu);
+    await h.advance(0);
+    assert.equal(h.stats.highClicks.length, 0);
+    assert.equal(h.stats.pickerClicks, clicks); // Cleanup must not click behind the popup either.
+    assert.equal(h.document.activeElement, h.dialog);
+    assert.equal(h.dialog.shown, true);
+    assert.equal(h.marker(), null);
+    assert.equal(h.stats.styles.size, 0);
+    await h.advance(6000);
+    assert.equal(h.stats.pickerClicks, clicks);
+    h.stop();
+  });
+}
+
+for (const stage of ['thinking', 'high']) {
+  test(`does not click ${stage} if a modal appears after the probe succeeds`, async () => {
+    const h = harness();
+    afterProbe(h[stage], () => {
+      h.dialog.shown = true;
+      h.dialog.focus();
+    });
+    await h.advance(0);
+    assert.equal(stage === 'high' ? h.stats.highClicks.length : h.stats.thinkingClicks, 0);
+    assert.equal(h.document.activeElement, h.dialog);
+    assert.equal(h.stats.pickerClicks, 1);
+    assert.equal(h.stats.styles.size, 0);
+    h.stop();
+  });
+}
+
+for (const trigger of ['picker', 'thinking']) {
+  test(`rejects High if the ${trigger} no longer controls the probed menu`, async () => {
+    const h = harness();
+    afterProbe(h.high, () => (trigger === 'picker' ? h.picker() : h.thinking).removeAttribute('aria-controls'));
+    await h.advance(0);
+    assert.equal(h.stats.highClicks.length, 0);
+    assert.equal(h.autoStyleCount(), 0);
+    h.stop();
+  });
+}
+
+test('retries safely after a stale option becomes available again', async () => {
+  const h = harness();
+  afterProbe(h.high, () => { h.high.isConnected = false; });
+  await h.advance(0);
+  assert.equal(h.stats.highClicks.length, 0);
+  h.high.isConnected = true;
+  await h.advance(6000);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.stats.modelClicks, 0);
+});
+
+test('cleanup after trusted cancellation leaves a newly opened modal alone', async () => {
+  const h = harness({ highReady: false });
+  await h.advance(0);
+  const clicks = h.stats.pickerClicks;
+  h.dialog.shown = true;
+  h.dialog.focus();
+  h.emit('keydown', h.dialog);
+  await h.advance(0);
+  assert.equal(h.stats.pickerClicks, clicks);
+  assert.equal(h.stats.highClicks.length, 0);
+  assert.equal(h.document.activeElement, h.dialog);
+  assert.equal(h.stats.styles.size, 0);
+  h.stop();
 });

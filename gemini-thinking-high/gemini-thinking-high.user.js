@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.1
+// @version      1.4.2
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -15,6 +15,7 @@
   'use strict';
 
   const PICKER = 'button[data-test-id="bard-mode-menu-button"]';
+  const POPUPS = '[role="menu"], [role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]';
   const THINKING = /^(Thinking level|思考程度|思考層級|思考等级|思考级别)$/i;
   const HIGH = /^(High|高|高等)(?:\s|$)/i;
   const HIGH_LABEL = /(?:^|\s)(High|高|高等)\s*$/i;
@@ -48,7 +49,13 @@
   };
   const menuItems = menu => [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')]
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
-  const popupOpen = () => [...document.querySelectorAll('[role="menu"], [role="dialog"], [aria-modal="true"]')]
+  const thinkingOption = item => ['menuitem', 'menuitemradio'].includes(item.getAttribute('role'))
+    && THINKING.test(text(item));
+  const highOption = item => item.getAttribute('role') === 'menuitemradio' && HIGH.test(text(item));
+  const ownedOption = (item, trigger, menu, matches) => enabled(trigger) && enabled(item)
+    && visible(menu) && controlledMenu(trigger) === menu
+    && item.closest('[role="menu"]') === menu && matches(item);
+  const popupOpen = () => [...document.querySelectorAll(POPUPS)]
     .some(visible);
   const observer = new MutationObserver(() => {
     if (stopped || document.hidden) return;
@@ -131,6 +138,17 @@
     const focus = document.activeElement;
     const valid = () => !stopped && !task.cancelled && !document.hidden
       && location.href === task.url && target.isConnected && target === button;
+    function deferToPopup() {
+      const blocked = [...document.querySelectorAll(POPUPS)].some(popup =>
+        popup !== task.menu && popup !== task.submenu && visible(popup));
+      if (blocked) {
+        task.blockedByPopup = true;
+        task.cancelled = true;
+        clearPointerFocus();
+      }
+      return blocked;
+    }
+    const canContinue = () => valid() && !deferToPopup();
     const maskedMenus = new Set();
     function maskMenu(trigger) {
       const id = trigger.getAttribute('aria-controls');
@@ -155,6 +173,7 @@
     async function waitFor(find, timeout = 3000) {
       if (!valid()) return null;
       const ready = find();
+      if (!canContinue()) return null;
       if (ready) return ready;
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -177,6 +196,7 @@
           try {
             if (!valid()) return finish(null);
             const value = find();
+            if (!canContinue()) return finish(null);
             if (value) return finish(value);
             for (const element of [target.parentElement || target, task.menu, task.submenu]) {
               if (element && !seen.has(element)) {
@@ -206,38 +226,47 @@
       const thinking = await waitFor(() => {
         task.menu = maskMenu(target);
         if (task.menu) markPointerFocus();
-        return visible(task.menu) && menuItems(task.menu).find(item => THINKING.test(text(item)));
+        const option = visible(task.menu) && menuItems(task.menu).find(thinkingOption);
+        if (option) task.submenu = controlledMenu(option);
+        return option;
       });
-      if (!thinking || !valid()) return;
+      if (!thinking) return;
       maskMenu(thinking);
+      // A successful probe can become stale before the awaited continuation.
+      if (!canContinue() || !ownedOption(thinking, target, task.menu, thinkingOption)) return;
       thinking.click();
       const high = await waitFor(() => {
         task.submenu = maskMenu(thinking);
-        return visible(task.submenu) && menuItems(task.submenu).find(item =>
-          item.getAttribute('role') === 'menuitemradio' && HIGH.test(text(item)));
+        return visible(task.submenu) && menuItems(task.submenu).find(highOption);
       });
-      if (!high || !valid()) return;
+      if (!high || !canContinue()
+        || !ownedOption(thinking, target, task.menu, thinkingOption)
+        || !ownedOption(high, thinking, task.submenu, highOption)) return;
       if (high.getAttribute('aria-checked') !== 'true') high.click();
       const confirmed = await waitFor(() => HIGH_LABEL.test(label(target)));
+      if (!canContinue()) return;
       if (!confirmed && valid()) console.warn('[Gemini Always High] High was not confirmed.');
     } catch (error) {
       console.warn('[Gemini Always High]', error);
     } finally {
       try {
+        // A popup may also arrive after timeout/cancellation, before cleanup.
+        // Leave background controls and the popup's focus under app/user control.
+        deferToPopup();
         // A timeout is retryable; it never permanently marks a model unsupported.
         if (valid()) {
           failures = HIGH_LABEL.test(label(target)) ? 0 : failures + 1;
           retryAt = Date.now() + 5000;
         }
-        if (!task.userOwnsMenu && target.isConnected && task.menu
-          && controlledMenu(target) === task.menu && visible(task.menu)
+        const ownsMenu = task.menu && controlledMenu(target) === task.menu;
+        if (!task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
         // Keep closing animations clipped too, without delaying the High setting.
-        if (valid() && task.menu && !task.userOwnsMenu) {
+        if (valid() && ownsMenu && !task.userOwnsMenu) {
           await waitFor(() => !visible(task.menu), 300);
         }
         const active = document.activeElement;
-        if (valid() && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
+        if (valid() && ownsMenu && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
           if (focus?.isConnected && focus !== document.body && focus !== document.documentElement) {
             focus.focus({ preventScroll: true });
           } else {
@@ -318,7 +347,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.1',
+    version: '1.4.2',
     stop() {
       stopped = true;
       if (run) {

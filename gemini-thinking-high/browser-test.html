@@ -46,7 +46,8 @@
     modeBox.hidden = !modeBox.hidden;
     picker.setAttribute('aria-expanded', String(!modeBox.hidden));
     if (modeBox.hidden) thinkingBox.hidden = true;
-    else unrelatedBox.hidden = false; // Appears after the script's preflight check.
+    // Keep the unrelated selector-scope sentinel hidden: showing a foreign
+    // popup now intentionally cancels automation. Computed CSS still applies.
   };
   document.getElementById('model').onclick = () => modelClicks++;
   document.getElementById('thinking').onclick = () => {
