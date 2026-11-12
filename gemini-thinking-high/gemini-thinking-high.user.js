@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.1.0
+// @version      1.2.0
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        none
 // @noframes
 // @downloadURL  https://github.com/cyanyux/userscripts/raw/main/gemini-thinking-high/gemini-thinking-high.user.js
@@ -27,10 +27,10 @@
   let button;
   let run;
   let key = '';
-  let stableAt = 0;
   let pauseUntil = 0;
   let retryAt = 0;
   let failures = 0;
+  const discoveryDeadline = Date.now() + 10_000;
   const text = element => (element?.textContent || '').trim().replace(/\s+/g, ' ');
   const label = element => element?.getAttribute('aria-label') || text(element);
   const visible = element => !!element?.isConnected && element.checkVisibility({
@@ -43,23 +43,30 @@
   const popupOpen = () => [...document.querySelectorAll('[role="menu"], [role="dialog"], [aria-modal="true"]')]
     .some(visible);
   const observer = new MutationObserver(() => schedule());
+  // Startup only: stop observing the page as soon as the picker exists, or
+  // after ten seconds on pages without one (for example the sign-in page).
+  const discovery = new MutationObserver(() => schedule());
+  discovery.observe(document, { childList: true, subtree: true });
 
   function schedule() {
     if (stopped || document.hidden || scheduled) return;
-    scheduled = setTimeout(() => {
-      scheduled = undefined;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
       tick();
-    }, 150);
+    });
   }
 
   function interact(event) {
     if (!event.isTrusted) return;
     pauseUntil = Date.now() + 1500;
     if (run) {
+      run.style?.remove();
       // Do not close a menu the user has started interacting with.
       run.userOwnsMenu = event.target === run.button || run.button.contains(event.target)
         || run.menu?.contains(event.target) || run.submenu?.contains(event.target);
       run.cancelled = true;
+      run.cancelWait?.();
     }
   }
 
@@ -69,18 +76,53 @@
     const focus = document.activeElement;
     const valid = () => !stopped && !task.cancelled && !document.hidden
       && location.href === task.url && target.isConnected && target === button;
-    async function waitFor(find) {
-      const deadline = Date.now() + 3000;
-      while (valid() && Date.now() < deadline) {
-        const result = find();
-        if (result) return result;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return null;
+    async function waitFor(find, timeout = 3000) {
+      if (!valid()) return null;
+      const ready = find();
+      if (ready) return ready;
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const seen = new Set();
+        const changes = new MutationObserver(check);
+        const poll = setInterval(check, 100); // CSS-only visibility changes.
+        const deadline = setTimeout(() => finish(null), timeout);
+        function finish(value, error) {
+          if (settled) return;
+          settled = true;
+          changes.disconnect();
+          clearInterval(poll);
+          clearTimeout(deadline);
+          task.cancelWait = undefined;
+          if (error) reject(error);
+          else resolve(value);
+        }
+        function check() {
+          if (settled) return;
+          try {
+            if (!valid()) return finish(null);
+            const value = find();
+            if (value) return finish(value);
+            for (const element of [target.parentElement || target, task.menu, task.submenu]) {
+              if (element && !seen.has(element)) {
+                seen.add(element);
+                changes.observe(element, { attributes: true, childList: true, subtree: true });
+              }
+            }
+          } catch (error) { finish(null, error); }
+        }
+        task.cancelWait = () => finish(null);
+        check();
+      });
     }
     try {
       // All clicks are limited to the picker, its Thinking level trigger, and High.
       if (!valid() || !enabled(target) || popupOpen()) return;
+      // Clip instead of hiding with display/visibility/opacity, so menu readiness
+      // checks still work. This stylesheet exists only during our own switch.
+      task.style = document.createElement('style');
+      task.style.textContent = 'gem-menu[role="menu"] { clip-path: inset(50%) !important; pointer-events: none !important; }'
+        + 'gem-menu[role="menu"], gem-menu[role="menu"] * { animation: none !important; transition: none !important; }';
+      document.documentElement.append(task.style);
       target.click();
       const thinking = await waitFor(() => {
         task.menu = controlledMenu(target);
@@ -109,6 +151,10 @@
         if (!task.userOwnsMenu && target.isConnected && task.menu
           && controlledMenu(target) === task.menu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
+        // Keep closing animations clipped too, without delaying the High setting.
+        if (valid() && task.menu && !task.userOwnsMenu) {
+          await waitFor(() => !visible(task.menu), 300);
+        }
         const active = document.activeElement;
         if (valid() && focus?.isConnected && focus !== document.body
           && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
@@ -117,8 +163,11 @@
       } catch (error) {
         console.warn('[Gemini Always High] Menu cleanup failed:', error);
       } finally {
-        run = undefined;
-        schedule();
+        try { task.style?.remove(); }
+        finally {
+          run = undefined;
+          schedule();
+        }
       }
     }
   }
@@ -126,8 +175,12 @@
   function tick() {
     if (stopped || document.hidden) return;
     const current = button?.isConnected ? button : document.querySelector(PICKER);
+    if (current || Date.now() >= discoveryDeadline) discovery.disconnect();
     if (current !== button) {
-      if (run) run.cancelled = true;
+      if (run) {
+        run.cancelled = true;
+        run.cancelWait?.();
+      }
       observer.disconnect();
       button = current;
       key = '';
@@ -138,32 +191,39 @@
     }
     if (!button) return;
     if (run) {
-      if (location.href !== run.url) run.cancelled = true;
+      if (location.href !== run.url) {
+        run.cancelled = true;
+        run.cancelWait?.();
+      }
       return;
     }
     const nextKey = location.href + '\n' + label(button);
     if (nextKey !== key) {
       key = nextKey;
-      stableAt = Date.now();
       failures = 0;
       retryAt = 0;
     }
     // No layout reads or menu scans on the common, already-High path.
     if (HIGH_LABEL.test(label(button)) || failures >= 3) return;
-    if (Date.now() < pauseUntil || Date.now() < retryAt || Date.now() - stableAt < 800) return;
+    if (Date.now() < pauseUntil || Date.now() < retryAt) return;
     if (enabled(button) && !popupOpen()) void setHigh(button);
   }
 
   function visibilityChanged() {
     clearInterval(interval);
-    clearTimeout(scheduled);
-    scheduled = undefined;
     if (document.hidden) {
-      if (run) run.cancelled = true;
+      discovery.disconnect();
+      if (run) {
+        run.cancelled = true;
+        run.cancelWait?.();
+      }
       return;
     }
     // A newly visible tab gets another chance after transient loading failures.
     key = '';
+    if (!button && Date.now() < discoveryDeadline) {
+      discovery.observe(document, { childList: true, subtree: true });
+    }
     interval = setInterval(tick, 1000);
     schedule();
   }
@@ -174,10 +234,14 @@
   window[INSTANCE] = {
     stop() {
       stopped = true;
-      if (run) run.cancelled = true;
+      if (run) {
+        run.cancelled = true;
+        run.cancelWait?.();
+        run.style?.remove();
+      }
       clearInterval(interval);
-      clearTimeout(scheduled);
       observer.disconnect();
+      discovery.disconnect();
       document.removeEventListener('pointerdown', interact, true);
       document.removeEventListener('keydown', interact, true);
       document.removeEventListener('visibilitychange', visibilityChanged);

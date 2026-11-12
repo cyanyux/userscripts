@@ -12,7 +12,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const timers = new Map();
   const listeners = new Map();
   const observers = new Set();
-  const stats = { layoutReads: 0, pickerQueries: 0, modelClicks: 0, warnings: [] };
+  const stats = { layoutReads: 0, pickerQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [] };
   const state = { model: 'Hydrogen', thinkingReady, highReady, cleanupThrows: false };
   const location = { href: 'https://gemini.google.com/app' };
   const document = {
@@ -23,8 +23,12 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     getElementById(id) { return [root, submenu].find(menu => menu.attrs.id === id) || null; },
-    querySelector() { stats.pickerQueries++; return picker; },
+    querySelector() { stats.pickerQueries++; return state.pickerMissing ? null : picker; },
     querySelectorAll() { return [root, submenu, dialog]; },
+    createElement() {
+      return { remove() { stats.styles.delete(this); } };
+    },
+    documentElement: { append(style) { stats.styles.add(style); } },
   };
   function emit(type, target = document.body) {
     for (const listener of listeners.get(type) || []) listener({ isTrusted: true, target });
@@ -81,7 +85,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     picker.attrs['aria-label'] = 'Open mode picker, currently ' + state.model + (isHigh ? ' High' : '');
     high.attrs['aria-checked'] = String(isHigh);
     for (const observer of observers) {
-      if (observer.target === picker) observer.callback();
+      if (observer.targets.has(picker)) observer.callback();
     }
   }
   function wirePicker() {
@@ -90,6 +94,8 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         if (state.cleanupThrows) throw new Error('Simulated cleanup exception');
         close();
       } else {
+        if (stats.styles.size) stats.mutedOpens++;
+        state.openedFor = location.href;
         root.shown = true;
         picker.attrs['aria-expanded'] = 'true';
         document.activeElement = thinking;
@@ -97,7 +103,12 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     };
   }
   thinking.click = () => { submenu.shown = true; document.activeElement = high; };
-  high.click = () => { setLabel(true); high.attrs['aria-checked'] = 'true'; close(); };
+  high.click = () => {
+    stats.highClicks.push({ openedFor: state.openedFor, url: location.href });
+    setLabel(true);
+    high.attrs['aria-checked'] = 'true';
+    close();
+  };
   wirePicker();
   setLabel(initialHigh);
   function addTimer(callback, delay, repeat = 0) {
@@ -108,12 +119,13 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const window = {};
   const context = vm.createContext({
     window, document, location,
+    queueMicrotask,
     Date: { now: () => now },
     console: { warn: (...args) => stats.warnings.push(args) },
     MutationObserver: class {
-      constructor(callback) { this.callback = callback; observers.add(this); }
-      observe(target) { this.target = target; }
-      disconnect() { this.target = null; }
+      constructor(callback) { this.callback = callback; this.targets = new Set(); observers.add(this); }
+      observe(target) { this.targets.add(target); }
+      disconnect() { this.targets.clear(); }
     },
     setTimeout: (callback, delay) => addTimer(callback, delay),
     clearTimeout: id => timers.delete(id),
@@ -121,6 +133,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     clearInterval: id => timers.delete(id),
   });
   async function advance(ms) {
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
     const end = now + ms;
     for (;;) {
       const next = [...timers.entries()].filter(([, timer]) => timer.at <= end)
@@ -131,16 +144,19 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       if (timer.repeat) timer.at += timer.repeat;
       else timers.delete(id);
       timer.callback();
-      for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
     }
     now = end;
-    for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
   }
   const start = () => vm.runInContext(source, context);
   start();
   return {
     stats, state, location, document, root, submenu, thinking, high, dialog, timers,
-    advance, start, emit, close, setLabel,
+    advance, start, emit, close, setLabel, observers,
+    mutate(element) {
+      for (const observer of observers) if (observer.targets.has(element)) observer.callback();
+    },
     isHigh: () => / High$/.test(picker.attrs['aria-label']),
     stop: () => window.__geminiAlwaysHighThinking.stop(),
     replacePicker() {
@@ -155,10 +171,12 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
 
 test('selects High without clicking a model option', async () => {
   const h = harness();
-  await h.advance(2500);
+  await h.advance(0);
   assert.equal(h.isHigh(), true);
   assert.equal(h.stats.modelClicks, 0);
   assert.equal(h.root.shown, false);
+  assert.equal(h.stats.mutedOpens, 1);
+  assert.equal(h.stats.styles.size, 0);
 });
 
 test('already-High idle path performs no layout reads or repeated picker queries', async () => {
@@ -198,6 +216,7 @@ test('limits unsupported controls to three attempts', async () => {
   await h.advance(40_000);
   assert.equal(h.stats.layoutReads, reads);
   assert.equal(h.isHigh(), false);
+  assert.equal(h.stats.styles.size, 0);
 });
 
 test('cancels stale-route work without clicking High', async () => {
@@ -207,10 +226,10 @@ test('cancels stale-route work without clicking High', async () => {
   h.location.href += '/another-chat';
   h.state.highReady = true;
   await h.advance(100);
-  assert.equal(h.isHigh(), false);
-  assert.equal(h.root.shown, false);
-  await h.advance(3000);
   assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.stats.highClicks[0].openedFor, h.location.href);
+  assert.equal(h.root.shown, false);
 });
 
 test('leaves user menus and dialogs alone; defers while typing', async () => {
@@ -235,6 +254,7 @@ test('user takeover cancels automation without closing their menu', async () => 
   await h.advance(1200);
   assert.equal(h.root.shown, true);
   h.emit('pointerdown', h.thinking);
+  assert.equal(h.stats.styles.size, 0);
   h.state.thinkingReady = true;
   await h.advance(2500);
   assert.equal(h.root.shown, true);
@@ -242,6 +262,53 @@ test('user takeover cancels automation without closing their menu', async () => 
   h.close();
   await h.advance(2500);
   assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.styles.size, 0);
+});
+
+test('detects the initial picker in the same turn without a polling delay', async () => {
+  const h = harness();
+  h.state.pickerMissing = true;
+  await h.advance(0);
+  assert.equal(h.isHigh(), false);
+  h.state.pickerMissing = false;
+  h.mutate(h.document);
+  await h.advance(0);
+  assert.equal(h.isHigh(), true);
+  assert.ok([...h.observers].every(observer => !observer.targets.has(h.document)));
+});
+
+test('startup discovery stops on pages without a picker', async () => {
+  const h = harness();
+  h.state.pickerMissing = true;
+  await h.advance(11_000);
+  assert.ok([...h.observers].every(observer => !observer.targets.has(h.document)));
+  h.state.pickerMissing = false;
+  await h.advance(1000);
+  assert.equal(h.isHigh(), true);
+});
+
+test('menu mutations wake a pending switch without waiting for its fallback timer', async () => {
+  const h = harness({ highReady: false });
+  await h.advance(0);
+  assert.equal(h.isHigh(), false);
+  assert.equal(h.stats.styles.size, 1);
+  h.state.highReady = true;
+  h.mutate(h.submenu);
+  await h.advance(0);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.styles.size, 0);
+});
+
+test('stopping in the middle of a switch immediately removes styles and wait timers', async () => {
+  const h = harness({ highReady: false });
+  await h.advance(0);
+  assert.equal(h.stats.styles.size, 1);
+  h.stop();
+  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.timers.size, 0);
+  await h.advance(0);
+  assert.equal(h.root.shown, false);
+  assert.equal(h.isHigh(), false);
 });
 
 test('hidden tabs stop their interval and resume when shown', async () => {
