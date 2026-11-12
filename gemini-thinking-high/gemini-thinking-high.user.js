@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.2.0
+// @version      1.3.0
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -19,6 +19,7 @@
   const HIGH = /^(High|高|高等)(?:\s|$)/i;
   const HIGH_LABEL = /(?:^|\s)(High|高|高等)\s*$/i;
   const INSTANCE = '__geminiAlwaysHighThinking';
+  const AUTO_SWITCH = 'data-gemini-high-auto-switch';
   if (typeof window[INSTANCE]?.stop === 'function') window[INSTANCE].stop();
 
   let stopped = false;
@@ -61,12 +62,21 @@
     if (!event.isTrusted) return;
     pauseUntil = Date.now() + 1500;
     if (run) {
-      run.style?.remove();
+      unmute(run);
       // Do not close a menu the user has started interacting with.
       run.userOwnsMenu = event.target === run.button || run.button.contains(event.target)
         || run.menu?.contains(event.target) || run.submenu?.contains(event.target);
       run.cancelled = true;
       run.cancelWait?.();
+    }
+  }
+
+  function unmute(task) {
+    task.style?.remove();
+    if (task.muted) {
+      if (task.previousMarker === null) task.button.removeAttribute(AUTO_SWITCH);
+      else task.button.setAttribute(AUTO_SWITCH, task.previousMarker);
+      task.muted = false;
     }
   }
 
@@ -120,9 +130,19 @@
       // Clip instead of hiding with display/visibility/opacity, so menu readiness
       // checks still work. This stylesheet exists only during our own switch.
       task.style = document.createElement('style');
-      task.style.textContent = 'gem-menu[role="menu"] { clip-path: inset(50%) !important; pointer-events: none !important; }'
-        + 'gem-menu[role="menu"], gem-menu[role="menu"] * { animation: none !important; transition: none !important; }';
+      task.style.textContent = 'gem-menu[role="menu"], .popover-menu:has(> gem-menu[role="menu"]),'
+        + '.submenu-container:has(> gem-menu[role="menu"]) { clip-path: inset(50%) !important; pointer-events: none !important; }'
+        + 'gem-menu[role="menu"], gem-menu[role="menu"] *, [' + AUTO_SWITCH + '], [' + AUTO_SWITCH + '] *'
+        + ' { animation: none !important; transition: none !important; }'
+        + '[' + AUTO_SWITCH + '] .dropdown-icon { transform: none !important; }'
+        + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; }'
+        + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
+        + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
+        + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
       document.documentElement.append(task.style);
+      task.previousMarker = target.getAttribute(AUTO_SWITCH);
+      task.muted = true;
+      target.setAttribute(AUTO_SWITCH, '');
       target.click();
       const thinking = await waitFor(() => {
         task.menu = controlledMenu(target);
@@ -163,7 +183,7 @@
       } catch (error) {
         console.warn('[Gemini Always High] Menu cleanup failed:', error);
       } finally {
-        try { task.style?.remove(); }
+        try { unmute(task); }
         finally {
           run = undefined;
           schedule();
@@ -232,12 +252,13 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
+    version: '1.3.0',
     stop() {
       stopped = true;
       if (run) {
         run.cancelled = true;
         run.cancelWait?.();
-        run.style?.remove();
+        unmute(run);
       }
       clearInterval(interval);
       observer.disconnect();

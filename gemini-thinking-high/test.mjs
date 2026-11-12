@@ -12,7 +12,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const timers = new Map();
   const listeners = new Map();
   const observers = new Set();
-  const stats = { layoutReads: 0, pickerQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [] };
+  const stats = { layoutReads: 0, pickerQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0 };
   const state = { model: 'Hydrogen', thinkingReady, highReady, cleanupThrows: false };
   const location = { href: 'https://gemini.google.com/app' };
   const document = {
@@ -43,6 +43,8 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       if (parent) parent.children.push(this);
     }
     getAttribute(name) { return this.attrs[name] ?? null; }
+    setAttribute(name, value) { this.attrs[name] = value; }
+    removeAttribute(name) { delete this.attrs[name]; }
     checkVisibility() {
       stats.layoutReads++;
       return this.shown && (!this.parent || this.parent.checkVisibility());
@@ -95,6 +97,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         close();
       } else {
         if (stats.styles.size) stats.mutedOpens++;
+        if (picker.getAttribute('data-gemini-high-auto-switch') !== null) stats.markedOpens++;
         state.openedFor = location.href;
         root.shown = true;
         picker.attrs['aria-expanded'] = 'true';
@@ -158,6 +161,8 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       for (const observer of observers) if (observer.targets.has(element)) observer.callback();
     },
     isHigh: () => / High$/.test(picker.attrs['aria-label']),
+    marker: () => picker.getAttribute('data-gemini-high-auto-switch'),
+    version: () => window.__geminiAlwaysHighThinking.version,
     stop: () => window.__geminiAlwaysHighThinking.stop(),
     replacePicker() {
       picker.isConnected = false;
@@ -176,7 +181,11 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.modelClicks, 0);
   assert.equal(h.root.shown, false);
   assert.equal(h.stats.mutedOpens, 1);
+  assert.equal(h.stats.markedOpens, 1);
+  assert.equal(h.marker(), null);
+  assert.equal(h.version(), '1.3.0');
   assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.marker(), null);
 });
 
 test('already-High idle path performs no layout reads or repeated picker queries', async () => {
@@ -255,6 +264,7 @@ test('user takeover cancels automation without closing their menu', async () => 
   assert.equal(h.root.shown, true);
   h.emit('pointerdown', h.thinking);
   assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.marker(), null);
   h.state.thinkingReady = true;
   await h.advance(2500);
   assert.equal(h.root.shown, true);
@@ -305,6 +315,7 @@ test('stopping in the middle of a switch immediately removes styles and wait tim
   assert.equal(h.stats.styles.size, 1);
   h.stop();
   assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.marker(), null);
   assert.equal(h.timers.size, 0);
   await h.advance(0);
   assert.equal(h.root.shown, false);
