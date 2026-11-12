@@ -12,7 +12,10 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const timers = new Map();
   const listeners = new Map();
   const observers = new Set();
-  const stats = { layoutReads: 0, pickerQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0 };
+  function notify(target, record) {
+    for (const observer of observers) observer.notify(target, record);
+  }
+  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
   const state = { model: 'Hydrogen', thinkingReady, highReady, cleanupThrows: false };
   const location = { href: 'https://gemini.google.com/app' };
   const document = {
@@ -22,7 +25,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       listeners.get(type).add(listener);
     },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
-    getElementById(id) { return [root, submenu].find(menu => menu.attrs.id === id) || null; },
+    getElementById(id) { return [root, submenu, dialog].find(menu => menu.attrs.id === String(id)) || null; },
     querySelector() { stats.pickerQueries++; return state.pickerMissing ? null : picker; },
     querySelectorAll() { return [root, submenu, dialog]; },
     createElement() {
@@ -43,8 +46,15 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       if (parent) parent.children.push(this);
     }
     getAttribute(name) { return this.attrs[name] ?? null; }
-    setAttribute(name, value) { this.attrs[name] = value; }
-    removeAttribute(name) { delete this.attrs[name]; }
+    setAttribute(name, value) {
+      this.attrs[name] = String(value);
+      notify(this, { type: 'attributes', attributeName: name });
+    }
+    removeAttribute(name) {
+      if (!(name in this.attrs)) return;
+      delete this.attrs[name];
+      notify(this, { type: 'attributes', attributeName: name });
+    }
     checkVisibility() {
       stats.layoutReads++;
       return this.shown && (!this.parent || this.parent.checkVisibility());
@@ -55,6 +65,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       return element === this || this.children.some(child => child.contains(element));
     }
     querySelectorAll(selector) {
+      stats.menuQueries++;
       const descendants = [];
       function walk(element) {
         for (const child of element.children) {
@@ -90,14 +101,11 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   high.checkVisibility = () => state.highReady && originalHighVisible();
   function close() {
     root.shown = submenu.shown = false;
-    picker.attrs['aria-expanded'] = 'false';
+    picker.setAttribute('aria-expanded', 'false');
   }
   function setLabel(isHigh) {
-    picker.attrs['aria-label'] = 'Open mode picker, currently ' + state.model + (isHigh ? ' High' : '');
-    high.attrs['aria-checked'] = String(isHigh);
-    for (const observer of observers) {
-      if (observer.targets.has(picker)) observer.callback();
-    }
+    picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (isHigh ? ' High' : ''));
+    high.setAttribute('aria-checked', String(isHigh));
   }
   function wirePicker() {
     picker.click = () => {
@@ -105,11 +113,13 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         if (state.cleanupThrows) throw new Error('Simulated cleanup exception');
         close();
       } else {
+        if ([...stats.styles].some(style => style.textContent?.includes('.dropdown-icon'))) stats.arrowMutedOpens++;
+        if (state.lateControls) picker.setAttribute('aria-controls', 'mode-menu');
         if ([...stats.styles].some(style => style.textContent.includes('clip-path:'))) stats.mutedOpens++;
         if (picker.getAttribute('data-gemini-high-auto-switch') !== null) stats.markedOpens++;
         state.openedFor = location.href;
         root.shown = true;
-        picker.attrs['aria-expanded'] = 'true';
+        picker.setAttribute('aria-expanded', 'true');
         document.activeElement = thinking;
       }
     };
@@ -118,7 +128,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   high.click = () => {
     stats.highClicks.push({ openedFor: state.openedFor, url: location.href });
     setLabel(true);
-    high.attrs['aria-checked'] = 'true';
+    high.setAttribute('aria-checked', 'true');
     close();
   };
   wirePicker();
@@ -132,12 +142,35 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const context = vm.createContext({
     window, document, location,
     queueMicrotask,
+    CSS: { escape: value => value }, // Fixture IDs are already valid CSS identifiers.
     Date: { now: () => now },
     console: { warn: (...args) => stats.warnings.push(args) },
     MutationObserver: class {
-      constructor(callback) { this.callback = callback; this.targets = new Set(); observers.add(this); }
-      observe(target) { this.targets.add(target); }
-      disconnect() { this.targets.clear(); }
+      constructor(callback) {
+        this.callback = callback;
+        this.targets = new Map();
+        this.records = [];
+        this.pending = false;
+        observers.add(this);
+      }
+      observe(target, options) { this.targets.set(target, options); }
+      disconnect() { this.targets.clear(); this.records.length = 0; }
+      notify(target, record) {
+        const interested = [...this.targets].some(([element, options]) =>
+          (element === target || (options.subtree && element.contains?.(target)))
+          && options[record.type === 'attributes' ? 'attributes' : 'childList']
+          && (record.type !== 'attributes' || !options.attributeFilter
+            || options.attributeFilter.includes(record.attributeName)));
+        if (!interested) return;
+        this.records.push({ target, ...record });
+        if (this.pending) return;
+        this.pending = true;
+        queueMicrotask(() => {
+          this.pending = false;
+          const records = this.records.splice(0);
+          if (records.length) this.callback(records, this);
+        });
+      }
     },
     setTimeout: (callback, delay) => addTimer(callback, delay),
     clearTimeout: id => timers.delete(id),
@@ -167,7 +200,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     stats, state, location, document, root, submenu, thinking, high, dialog, timers,
     advance, start, emit, close, setLabel, observers,
     mutate(element) {
-      for (const observer of observers) if (observer.targets.has(element)) observer.callback();
+      notify(element, { type: 'childList' });
     },
     isHigh: () => / High$/.test(picker.attrs['aria-label']),
     marker: () => picker.getAttribute('data-gemini-high-auto-switch'),
@@ -197,7 +230,7 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.0');
+  assert.equal(h.version(), '1.4.1');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -235,6 +268,7 @@ test('limits unsupported controls to three attempts', async () => {
   const h = harness({ thinkingReady: false });
   await h.advance(40_000);
   const reads = h.stats.layoutReads;
+  assert.equal(h.stats.mutedOpens, 3);
   await h.advance(40_000);
   assert.equal(h.stats.layoutReads, reads);
   assert.equal(h.isHigh(), false);
@@ -409,4 +443,47 @@ test('pointer focus suppression is scoped and keyboard input immediately restore
   h.stop();
   assert.equal(h.pointerMarked().length, 0);
   assert.equal(h.stats.styles.size, 0);
+});
+
+test('hidden picker mutations do not scan menus or reapply focus styling', async () => {
+  const h = harness();
+  await h.advance(0);
+  h.document.hidden = true;
+  h.emit('visibilitychange');
+  const queries = h.stats.menuQueries;
+  h.picker().setAttribute('aria-expanded', 'true');
+  await h.advance(0);
+  assert.equal(h.stats.menuQueries, queries);
+  h.stop();
+  assert.equal(h.stats.styles.size, 0);
+});
+
+test('picker visuals are muted even when menu IDs are assigned only on open', async () => {
+  const h = harness();
+  h.state.lateControls = true;
+  h.dialog.setAttribute('id', 'null'); // Native getElementById(null) coerces to this ID.
+  h.picker().removeAttribute('aria-controls');
+  await h.advance(0);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.arrowMutedOpens, 1);
+  assert.equal(h.marker(), null);
+  assert.equal(h.dialog.getAttribute('data-gemini-high-pointer-focus'), null);
+});
+
+test('reinjection during a pending switch cancels queued observers and the old run', async () => {
+  const h = harness({ highReady: false });
+  await h.advance(0);
+  h.picker().setAttribute('aria-disabled', 'false'); // Queued observer delivery.
+  h.start();
+  await h.advance(0);
+  h.state.highReady = true;
+  h.mutate(h.submenu);
+  await h.advance(0);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.autoStyleCount(), 0);
+  h.stop();
+  await h.advance(0);
+  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.timers.size, 0);
 });

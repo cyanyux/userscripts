@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gemini userscript CSS regression</title>
+<style id="fixture-css">
+  body { font: 18px system-ui; padding: 32px; background: #181818; color: #eee; }
+  [hidden] { display: none !important; }
+  button { position: relative; font: inherit; padding: 12px; }
+  gem-menu { display: block; padding: 16px; }
+  .popover-menu, .submenu-container { padding: 8px; background: #345; border: 2px solid #abc; }
+  .dropdown-icon { display: inline-block; transition: transform .3s; }
+  button[aria-expanded="true"] .dropdown-icon { transform: scaleY(-1); }
+  .mdc-button__ripple::before { content: ''; position: absolute; inset: 0; background: #888; opacity: .3; }
+</style>
+<h1>Gemini userscript CSS regression</h1>
+<p id="report">Running…</p>
+<button data-test-id="bard-mode-menu-button" aria-label="Open mode picker, currently Hydrogen"
+        aria-controls="mode-menu" aria-expanded="false">
+  <span class="mdc-button__ripple"></span>Hydrogen <span class="dropdown-icon">⌄</span>
+</button>
+<div class="popover-menu" id="mode-box" hidden>
+  <gem-menu id="mode-menu" role="menu">
+    <button role="menuitemradio" id="model">4 Hydrogen</button>
+    <button role="menuitem" id="thinking" aria-controls="thinking-menu">Thinking level</button>
+    <div class="submenu-container" id="thinking-box" hidden>
+      <gem-menu id="thinking-menu" role="menu">
+        <button role="menuitemradio" aria-checked="false" aria-disabled="true" id="high">High Extra thorough</button>
+      </gem-menu>
+    </div>
+  </gem-menu>
+</div>
+<div class="popover-menu" id="unrelated-box" hidden>
+  <gem-menu role="menu" id="unrelated-menu">Unrelated application menu</gem-menu>
+</div>
+<script>
+  const picker = document.querySelector('[data-test-id]');
+  const modeBox = document.getElementById('mode-box');
+  const thinkingBox = document.getElementById('thinking-box');
+  const high = document.getElementById('high');
+  const unrelatedBox = document.getElementById('unrelated-box');
+  const unrelated = document.getElementById('unrelated-menu');
+  const failures = new Set();
+  let samples = 0;
+  let modelClicks = 0;
+  function check(condition, message) { if (!condition) failures.add(message); }
+  picker.onclick = () => {
+    modeBox.hidden = !modeBox.hidden;
+    picker.setAttribute('aria-expanded', String(!modeBox.hidden));
+    if (modeBox.hidden) thinkingBox.hidden = true;
+    else unrelatedBox.hidden = false; // Appears after the script's preflight check.
+  };
+  document.getElementById('model').onclick = () => modelClicks++;
+  document.getElementById('thinking').onclick = () => {
+    thinkingBox.hidden = false;
+    setTimeout(() => high.setAttribute('aria-disabled', 'false'), 200);
+  };
+  high.onclick = () => {
+    picker.setAttribute('aria-label', 'Open mode picker, currently Hydrogen High');
+    high.setAttribute('aria-checked', 'true');
+    modeBox.hidden = thinkingBox.hidden = true;
+    picker.setAttribute('aria-expanded', 'false');
+  };
+  const end = performance.now() + 800;
+  function sample() {
+    if (picker.hasAttribute('data-gemini-high-auto-switch')) {
+      samples++;
+      check(getComputedStyle(document.getElementById('mode-menu')).clipPath === 'inset(50%)', 'owned menu visible');
+      check(getComputedStyle(modeBox).clipPath === 'inset(50%)', 'owned wrapper visible');
+      check(getComputedStyle(unrelated).clipPath === 'none', 'unrelated menu clipped');
+      check(getComputedStyle(unrelatedBox).clipPath === 'none', 'unrelated wrapper clipped');
+      check(getComputedStyle(picker.querySelector('.dropdown-icon')).transform === 'none', 'arrow animated');
+      check(getComputedStyle(picker.querySelector('.mdc-button__ripple'), '::before').opacity === '0', 'ripple visible');
+    }
+    if (performance.now() < end) requestAnimationFrame(sample);
+  }
+  requestAnimationFrame(sample);
+  setTimeout(() => {
+    check(samples > 0, 'automatic switch not sampled');
+    check(picker.getAttribute('aria-label').endsWith(' High'), 'High not selected');
+    check(modelClicks === 0, 'model changed');
+    check(!picker.hasAttribute('data-gemini-high-auto-switch'), 'animation marker leaked');
+    picker.click();
+    check(getComputedStyle(modeBox).clipPath === 'none', 'manual menu clipped');
+    check(getComputedStyle(picker.querySelector('.dropdown-icon')).transitionDuration === '0.3s', 'manual animation overridden');
+    picker.click();
+    const version = window.__geminiAlwaysHighThinking?.version;
+    window.__geminiAlwaysHighThinking?.stop();
+    check(document.querySelectorAll('[data-gemini-high-pointer-focus]').length === 0, 'focus marker leaked');
+    check(document.styleSheets.length === 1, 'stylesheet leaked');
+    document.getElementById('report').textContent = failures.size
+      ? 'FAIL: ' + [...failures].join('; ')
+      : 'PASS: ' + version + '; owned menus masked; unrelated menus untouched; manual styles restored; no model clicks or leaked styles.';
+  }, 1000);
+</script>
+<script src="./gemini-thinking-high.user.js"></script>

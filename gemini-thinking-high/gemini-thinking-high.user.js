@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.0
+// @version      1.4.1
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -42,12 +42,16 @@
     checkVisibilityCSS: true, checkOpacity: true,
   });
   const enabled = element => visible(element) && !element.matches(':disabled, [aria-disabled="true"]');
-  const controlledMenu = trigger => document.getElementById(trigger.getAttribute('aria-controls'));
+  const controlledMenu = trigger => {
+    const id = trigger.getAttribute('aria-controls');
+    return id ? document.getElementById(id) : null;
+  };
   const menuItems = menu => [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')]
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const popupOpen = () => [...document.querySelectorAll('[role="menu"], [role="dialog"], [aria-modal="true"]')]
     .some(visible);
   const observer = new MutationObserver(() => {
+    if (stopped || document.hidden) return;
     if (!keyboardInput && pointerStyle) markPointerFocus();
     schedule();
   });
@@ -90,7 +94,7 @@
   }
 
   function markPointerFocus() {
-    if (!button || keyboardInput) return;
+    if (stopped || document.hidden || !button?.isConnected || keyboardInput) return;
     for (const element of focusMarkers) {
       if (!element.isConnected) {
         element.removeAttribute(POINTER_FOCUS);
@@ -127,6 +131,27 @@
     const focus = document.activeElement;
     const valid = () => !stopped && !task.cancelled && !document.hidden
       && location.href === task.url && target.isConnected && target === button;
+    const maskedMenus = new Set();
+    function maskMenu(trigger) {
+      const id = trigger.getAttribute('aria-controls');
+      if (!task.maskInitialized || (id && !maskedMenus.has(id))) {
+        task.maskInitialized = true;
+        if (id) maskedMenus.add(id);
+        const menus = [...maskedMenus].map(value => '#' + CSS.escape(value) + '[role="menu"]');
+        const boxes = menus.flatMap(menu => [menu, '.popover-menu:has(> ' + menu + ')',
+          '.submenu-container:has(> ' + menu + ')']);
+        task.style.textContent = (boxes.length ? boxes.join(',')
+          + ' { clip-path: inset(50%) !important; pointer-events: none !important; }' : '')
+          + [...menus, ...menus.map(menu => menu + ' *'), '[' + AUTO_SWITCH + ']', '[' + AUTO_SWITCH + '] *'].join(',')
+          + ' { animation: none !important; transition: none !important; }'
+          + '[' + AUTO_SWITCH + '] .dropdown-icon { transform: none !important; }'
+          + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; }'
+          + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
+          + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
+          + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
+      }
+      return controlledMenu(trigger);
+    }
     async function waitFor(find, timeout = 3000) {
       if (!valid()) return null;
       const ready = find();
@@ -170,31 +195,24 @@
       if (!valid() || !enabled(target) || popupOpen()) return;
       markPointerFocus();
       // Clip instead of hiding with display/visibility/opacity, so menu readiness
-      // checks still work. This stylesheet exists only during our own switch.
+      // checks still work. Only menus referenced by our triggers are affected.
       task.style = document.createElement('style');
-      task.style.textContent = 'gem-menu[role="menu"], .popover-menu:has(> gem-menu[role="menu"]),'
-        + '.submenu-container:has(> gem-menu[role="menu"]) { clip-path: inset(50%) !important; pointer-events: none !important; }'
-        + 'gem-menu[role="menu"], gem-menu[role="menu"] *, [' + AUTO_SWITCH + '], [' + AUTO_SWITCH + '] *'
-        + ' { animation: none !important; transition: none !important; }'
-        + '[' + AUTO_SWITCH + '] .dropdown-icon { transform: none !important; }'
-        + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; }'
-        + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
-        + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
-        + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
       document.documentElement.append(task.style);
       task.previousMarker = target.getAttribute(AUTO_SWITCH);
       task.muted = true;
       target.setAttribute(AUTO_SWITCH, '');
+      maskMenu(target);
       target.click();
       const thinking = await waitFor(() => {
-        task.menu = controlledMenu(target);
+        task.menu = maskMenu(target);
         if (task.menu) markPointerFocus();
         return visible(task.menu) && menuItems(task.menu).find(item => THINKING.test(text(item)));
       });
       if (!thinking || !valid()) return;
+      maskMenu(thinking);
       thinking.click();
       const high = await waitFor(() => {
-        task.submenu = controlledMenu(thinking);
+        task.submenu = maskMenu(thinking);
         return visible(task.submenu) && menuItems(task.submenu).find(item =>
           item.getAttribute('role') === 'menuitemradio' && HIGH.test(text(item)));
       });
@@ -300,7 +318,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.0',
+    version: '1.4.1',
     stop() {
       stopped = true;
       if (run) {

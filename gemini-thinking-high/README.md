@@ -14,7 +14,7 @@ Automatically select **Thinking level → High**, while leaving Gemini's remembe
 - Never selects a model, submits a prompt, calls private APIs, or sends network requests.
 - Manually selecting Low or Medium will be followed by an automatic switch back to High. Disable this script when you want a different level.
 - Runs at document start and applies High as soon as the picker is ready, without a fixed startup delay. Gemini still needs to load its model controls; the script cannot change the app's initial server-side default.
-- Clips automatic Gemini menus and their popover wrappers, including closing animations. During that switch only, it also freezes the picker's arrow and suppresses click ripples. These animation styles and markers are removed on completion, cancellation, error, or stop.
+- Clips only the menus referenced by the picker's and Thinking level trigger's `aria-controls`, plus their popover wrappers, including closing animations. Other application menus are unaffected. During that switch only, it also freezes the picker's arrow and suppresses click ripples. These animation styles and markers are removed on completion, cancellation, error, or stop.
 - Returns focus to the previously focused control; if no control was focused before automation, it clears the focus introduced by the menu. Pointer interactions suppress focus rings only on the model picker and its menus. Any trusted keyboard input immediately restores normal focus rings. This scoped focus styling is cleared on keyboard input, picker replacement, or script stop.
 - Defers while typing, while another menu/dialog is open, and while the tab is hidden.
 - Uses the picker's accessible menu references to select High only inside its Thinking level submenu.
@@ -34,4 +34,6 @@ node --test gemini-thinking-high/test.mjs
 node --check gemini-thinking-high/gemini-thinking-high.user.js
 ```
 
-The suite covers immediate startup, bounded discovery, mutation-driven menu readiness, temporary-style cleanup, model preservation, the idle path, same-URL resets, SPA navigation, picker replacement, transient failures, retry limits, user interaction, dialogs, visibility, cleanup exceptions, and reinjection. It uses a simulated accessible-menu DOM and clock; it does not substitute for testing Gemini's current UI in Edge.
+The suite covers immediate startup, bounded discovery, mutation-driven menu readiness, temporary-style cleanup, model preservation, the idle path, same-URL resets, SPA navigation, picker replacement, transient failures, retry limits, user interaction, dialogs, visibility, cleanup exceptions, and reinjection. Its MutationObserver model batches notifications asynchronously and honors attribute filters and subtree registrations. It uses a simulated accessible-menu DOM and clock; it does not substitute for testing Gemini's current UI in Edge.
+
+Open `browser-test.html` directly in Edge for a separate, network-free CSS regression. It loads the real userscript and checks computed styles during a delayed switch, including that an unrelated application menu remains visible, manual menu styles return, and stopping the script leaves no styles or markers behind. A successful run displays `PASS`. This fixture does not test Gemini's server or native keyboard-modality heuristics.
