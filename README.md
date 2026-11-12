@@ -15,3 +15,7 @@ Hide disclaimer containers on ChatGPT, Gemini, and Claude.
 ### [Hide Video Focus Outline](./hide-video-focus-outline/README.md)
 
 Removes the focus outline/ring on HTML5 `<video>` elements on all sites, including shadow DOM.
+
+### [Gemini — Always High Thinking](./gemini-thinking-high/README.md)
+
+Automatically set Gemini's thinking level to High while preserving the remembered model.
