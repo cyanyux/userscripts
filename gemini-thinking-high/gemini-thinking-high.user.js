@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.3.0
+// @version      1.4.0
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -20,6 +20,7 @@
   const HIGH_LABEL = /(?:^|\s)(High|高|高等)\s*$/i;
   const INSTANCE = '__geminiAlwaysHighThinking';
   const AUTO_SWITCH = 'data-gemini-high-auto-switch';
+  const POINTER_FOCUS = 'data-gemini-high-pointer-focus';
   if (typeof window[INSTANCE]?.stop === 'function') window[INSTANCE].stop();
 
   let stopped = false;
@@ -31,6 +32,9 @@
   let pauseUntil = 0;
   let retryAt = 0;
   let failures = 0;
+  let keyboardInput = false;
+  let pointerStyle;
+  const focusMarkers = new Set();
   const discoveryDeadline = Date.now() + 10_000;
   const text = element => (element?.textContent || '').trim().replace(/\s+/g, ' ');
   const label = element => element?.getAttribute('aria-label') || text(element);
@@ -43,7 +47,10 @@
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const popupOpen = () => [...document.querySelectorAll('[role="menu"], [role="dialog"], [aria-modal="true"]')]
     .some(visible);
-  const observer = new MutationObserver(() => schedule());
+  const observer = new MutationObserver(() => {
+    if (!keyboardInput && pointerStyle) markPointerFocus();
+    schedule();
+  });
   // Startup only: stop observing the page as soon as the picker exists, or
   // after ten seconds on pages without one (for example the sign-in page).
   const discovery = new MutationObserver(() => schedule());
@@ -60,6 +67,10 @@
 
   function interact(event) {
     if (!event.isTrusted) return;
+    keyboardInput = event.type === 'keydown';
+    if (keyboardInput) clearPointerFocus();
+    else if (button && (button.contains(event.target)
+      || [...focusMarkers].some(element => element.contains(event.target)))) markPointerFocus();
     pauseUntil = Date.now() + 1500;
     if (run) {
       unmute(run);
@@ -68,6 +79,36 @@
         || run.menu?.contains(event.target) || run.submenu?.contains(event.target);
       run.cancelled = true;
       run.cancelWait?.();
+    }
+  }
+
+  function clearPointerFocus() {
+    pointerStyle?.remove();
+    pointerStyle = undefined;
+    for (const element of focusMarkers) element.removeAttribute(POINTER_FOCUS);
+    focusMarkers.clear();
+  }
+
+  function markPointerFocus() {
+    if (!button || keyboardInput) return;
+    for (const element of focusMarkers) {
+      if (!element.isConnected) {
+        element.removeAttribute(POINTER_FOCUS);
+        focusMarkers.delete(element);
+      }
+    }
+    if (!pointerStyle) {
+      pointerStyle = document.createElement('style');
+      pointerStyle.textContent = '[' + POINTER_FOCUS + ']:focus-visible, [' + POINTER_FOCUS + ']'
+        + ' [role^="menuitem"]:focus-visible { outline: none !important; box-shadow: none !important; }';
+      document.documentElement.append(pointerStyle);
+    }
+    const menu = controlledMenu(button);
+    for (const element of [button, menu, ...(menu?.querySelectorAll('[role="menu"]') || [])]) {
+      if (element && !focusMarkers.has(element)) {
+        focusMarkers.add(element);
+        element.setAttribute(POINTER_FOCUS, '');
+      }
     }
   }
 
@@ -127,6 +168,7 @@
     try {
       // All clicks are limited to the picker, its Thinking level trigger, and High.
       if (!valid() || !enabled(target) || popupOpen()) return;
+      markPointerFocus();
       // Clip instead of hiding with display/visibility/opacity, so menu readiness
       // checks still work. This stylesheet exists only during our own switch.
       task.style = document.createElement('style');
@@ -146,6 +188,7 @@
       target.click();
       const thinking = await waitFor(() => {
         task.menu = controlledMenu(target);
+        if (task.menu) markPointerFocus();
         return visible(task.menu) && menuItems(task.menu).find(item => THINKING.test(text(item)));
       });
       if (!thinking || !valid()) return;
@@ -176,9 +219,13 @@
           await waitFor(() => !visible(task.menu), 300);
         }
         const active = document.activeElement;
-        if (valid() && focus?.isConnected && focus !== document.body
-          && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
-          focus.focus({ preventScroll: true });
+        if (valid() && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
+          if (focus?.isConnected && focus !== document.body && focus !== document.documentElement) {
+            focus.focus({ preventScroll: true });
+          } else {
+            // Startup had no focused control: do not leave focus on our picker.
+            active?.blur();
+          }
         }
       } catch (error) {
         console.warn('[Gemini Always High] Menu cleanup failed:', error);
@@ -202,10 +249,11 @@
         run.cancelWait?.();
       }
       observer.disconnect();
+      clearPointerFocus();
       button = current;
       key = '';
       if (button) observer.observe(button, {
-        attributes: true, attributeFilter: ['aria-label', 'aria-disabled', 'disabled'],
+        attributes: true, attributeFilter: ['aria-label', 'aria-disabled', 'disabled', 'aria-controls', 'aria-expanded'],
         childList: true, characterData: true, subtree: true,
       });
     }
@@ -252,7 +300,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.3.0',
+    version: '1.4.0',
     stop() {
       stopped = true;
       if (run) {
@@ -263,6 +311,7 @@
       clearInterval(interval);
       observer.disconnect();
       discovery.disconnect();
+      clearPointerFocus();
       document.removeEventListener('pointerdown', interact, true);
       document.removeEventListener('keydown', interact, true);
       document.removeEventListener('visibilitychange', visibilityChanged);

@@ -31,7 +31,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     documentElement: { append(style) { stats.styles.add(style); } },
   };
   function emit(type, target = document.body) {
-    for (const listener of listeners.get(type) || []) listener({ isTrusted: true, target });
+    for (const listener of listeners.get(type) || []) listener({ type, isTrusted: true, target });
   }
   class Element {
     constructor(attrs = {}, parent = null) {
@@ -54,11 +54,20 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     contains(element) {
       return element === this || this.children.some(child => child.contains(element));
     }
-    querySelectorAll() {
-      return this.children.flatMap(child => [child, ...child.querySelectorAll()])
-        .filter(child => child.attrs.role?.startsWith('menuitem'));
+    querySelectorAll(selector) {
+      const descendants = [];
+      function walk(element) {
+        for (const child of element.children) {
+          descendants.push(child);
+          walk(child);
+        }
+      }
+      walk(this);
+      return descendants.filter(child => selector === '[role="menu"]'
+        ? child.attrs.role === 'menu' : child.attrs.role?.startsWith('menuitem'));
     }
     focus() { document.activeElement = this; }
+    blur() { if (document.activeElement === this) document.activeElement = document.body; }
   }
   const body = new Element();
   document.body = body;
@@ -96,7 +105,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         if (state.cleanupThrows) throw new Error('Simulated cleanup exception');
         close();
       } else {
-        if (stats.styles.size) stats.mutedOpens++;
+        if ([...stats.styles].some(style => style.textContent.includes('clip-path:'))) stats.mutedOpens++;
         if (picker.getAttribute('data-gemini-high-auto-switch') !== null) stats.markedOpens++;
         state.openedFor = location.href;
         root.shown = true;
@@ -162,6 +171,11 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     },
     isHigh: () => / High$/.test(picker.attrs['aria-label']),
     marker: () => picker.getAttribute('data-gemini-high-auto-switch'),
+    picker: () => picker,
+    control: () => new Element(),
+    autoStyleCount: () => [...stats.styles].filter(style => style.textContent.includes('clip-path:')).length,
+    pointerMarked: () => [picker, root, submenu].filter(element =>
+      element.getAttribute('data-gemini-high-pointer-focus') !== null),
     version: () => window.__geminiAlwaysHighThinking.version,
     stop: () => window.__geminiAlwaysHighThinking.stop(),
     replacePicker() {
@@ -183,9 +197,8 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.3.0');
-  assert.equal(h.stats.styles.size, 0);
-  assert.equal(h.marker(), null);
+  assert.equal(h.version(), '1.4.0');
+  assert.equal(h.autoStyleCount(), 0);
 });
 
 test('already-High idle path performs no layout reads or repeated picker queries', async () => {
@@ -225,7 +238,7 @@ test('limits unsupported controls to three attempts', async () => {
   await h.advance(40_000);
   assert.equal(h.stats.layoutReads, reads);
   assert.equal(h.isHigh(), false);
-  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.autoStyleCount(), 0);
 });
 
 test('cancels stale-route work without clicking High', async () => {
@@ -263,7 +276,7 @@ test('user takeover cancels automation without closing their menu', async () => 
   await h.advance(1200);
   assert.equal(h.root.shown, true);
   h.emit('pointerdown', h.thinking);
-  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.autoStyleCount(), 0);
   assert.equal(h.marker(), null);
   h.state.thinkingReady = true;
   await h.advance(2500);
@@ -272,7 +285,7 @@ test('user takeover cancels automation without closing their menu', async () => 
   h.close();
   await h.advance(2500);
   assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.autoStyleCount(), 0);
 });
 
 test('detects the initial picker in the same turn without a polling delay', async () => {
@@ -301,18 +314,18 @@ test('menu mutations wake a pending switch without waiting for its fallback time
   const h = harness({ highReady: false });
   await h.advance(0);
   assert.equal(h.isHigh(), false);
-  assert.equal(h.stats.styles.size, 1);
+  assert.equal(h.autoStyleCount(), 1);
   h.state.highReady = true;
   h.mutate(h.submenu);
   await h.advance(0);
   assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.styles.size, 0);
+  assert.equal(h.autoStyleCount(), 0);
 });
 
 test('stopping in the middle of a switch immediately removes styles and wait timers', async () => {
   const h = harness({ highReady: false });
   await h.advance(0);
-  assert.equal(h.stats.styles.size, 1);
+  assert.equal(h.autoStyleCount(), 1);
   h.stop();
   assert.equal(h.stats.styles.size, 0);
   assert.equal(h.marker(), null);
@@ -362,4 +375,38 @@ test('reinjection disposes the previous instance; stop clears all observers and 
   await h.advance(5000);
   assert.equal(h.timers.size, 0);
   assert.equal(h.isHigh(), false);
+});
+
+test('startup does not leave focus on the picker or hidden menu items', async () => {
+  const h = harness();
+  await h.advance(0);
+  assert.equal(h.document.activeElement, h.document.body);
+});
+
+test('restores the previously focused control without focusing another control', async () => {
+  const h = harness();
+  const editor = h.control();
+  editor.focus();
+  await h.advance(0);
+  assert.equal(h.document.activeElement, editor);
+  assert.equal(editor.getAttribute('data-gemini-high-pointer-focus'), null);
+});
+
+test('pointer focus suppression is scoped and keyboard input immediately restores rings', async () => {
+  const h = harness();
+  await h.advance(0);
+  assert.ok(h.pointerMarked().includes(h.picker()));
+  assert.ok(h.pointerMarked().includes(h.root));
+  h.emit('keydown');
+  assert.equal(h.pointerMarked().length, 0);
+  assert.equal(h.stats.styles.size, 0);
+  h.setLabel(false);
+  await h.advance(2500);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.pointerMarked().length, 0);
+  h.emit('pointerdown', h.picker());
+  assert.ok(h.pointerMarked().includes(h.picker()));
+  h.stop();
+  assert.equal(h.pointerMarked().length, 0);
+  assert.equal(h.stats.styles.size, 0);
 });
