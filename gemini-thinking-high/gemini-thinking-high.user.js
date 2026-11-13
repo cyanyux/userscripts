@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.3
+// @version      1.4.4
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -21,6 +21,7 @@
   const HIGH_LABEL = /(?:^|\s)(High|高|高等)\s*$/i;
   const INSTANCE = '__geminiAlwaysHighThinking';
   const AUTO_SWITCH = 'data-gemini-high-auto-switch';
+  const MENU_MASK = 'data-gemini-high-menu-mask';
   const POINTER_FOCUS = 'data-gemini-high-pointer-focus';
   if (typeof window[INSTANCE]?.stop === 'function') window[INSTANCE].stop();
 
@@ -128,6 +129,11 @@
 
   function unmute(task) {
     task.style?.remove();
+    for (const [surface, previous] of task.surfaces) {
+      if (previous === null) surface.removeAttribute(MENU_MASK);
+      else surface.setAttribute(MENU_MASK, previous);
+    }
+    task.surfaces.clear();
     if (task.muted) {
       if (task.previousMarker === null) task.button.removeAttribute(AUTO_SWITCH);
       else task.button.setAttribute(AUTO_SWITCH, task.previousMarker);
@@ -136,7 +142,7 @@
   }
 
   async function setHigh(target) {
-    const task = { button: target, url: location.href, cancelled: false, userOwnsMenu: false };
+    const task = { button: target, url: location.href, cancelled: false, userOwnsMenu: false, surfaces: new Map() };
     run = task;
     const focus = document.activeElement;
     const valid = () => !stopped && !task.cancelled && !document.hidden
@@ -154,25 +160,36 @@
     const canContinue = () => valid() && !deferToPopup();
     const maskedMenus = new Set();
     function maskMenu(trigger) {
+      const menu = controlledMenu(trigger);
+      // Mark actual surfaces, not only :has(menu): an empty closing shell can
+      // keep painting after its content has been hidden, moved, or detached.
+      for (let surface = menu; surface; surface = surface.parentElement?.closest('.popover-menu, .submenu-container, .cdk-overlay-pane')) {
+        if (!task.surfaces.has(surface)) {
+          task.surfaces.set(surface, surface.getAttribute(MENU_MASK));
+          surface.setAttribute(MENU_MASK, '');
+        }
+      }
       const id = trigger.getAttribute('aria-controls');
       if (!task.maskInitialized || (id && !maskedMenus.has(id))) {
         task.maskInitialized = true;
         if (id) maskedMenus.add(id);
         const menus = [...maskedMenus].map(value => '#' + CSS.escape(value) + '[role="menu"]');
-        const boxes = menus.flatMap(menu => [menu, '.popover-menu:has(> ' + menu + ')',
-          '.submenu-container:has(> ' + menu + ')']);
-        task.style.textContent = (boxes.length ? boxes.join(',')
-          + ' { clip-path: inset(50%) !important; pointer-events: none !important; }' : '')
+        const boxes = ['[' + MENU_MASK + ']', ...menus.flatMap(menu => [menu, '.popover-menu:has(' + menu + ')',
+          '.submenu-container:has(' + menu + ')', '.cdk-overlay-pane:has(' + menu + ')'])];
+        task.style.textContent = boxes.join(',')
+          + ' { clip-path: inset(50%) !important; pointer-events: none !important; animation: none !important; transition: none !important; }'
           + [...menus, ...menus.map(menu => menu + ' *'), '[' + AUTO_SWITCH + ']', '[' + AUTO_SWITCH + '] *'].join(',')
           + ' { animation: none !important; transition: none !important; }'
           + '[' + AUTO_SWITCH + '] .dropdown-icon { transform: none !important; }'
-          + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; }'
+          + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; background-color: '
+          + task.background + ' !important; }'
           + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
           + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
           + '[' + AUTO_SWITCH + '] .mat-focus-indicator::before,'
-          + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
+          + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }'
+          + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before { opacity: ' + task.rippleOpacity + ' !important; }';
       }
-      return controlledMenu(trigger);
+      return menu;
     }
     async function waitFor(find, timeout = 3000) {
       if (!valid()) return null;
@@ -218,6 +235,9 @@
       // All clicks are limited to the picker, its Thinking level trigger, and High.
       if (!valid() || !enabled(target) || popupOpen()) return;
       markPointerFocus();
+      task.background = getComputedStyle(target).backgroundColor;
+      const ripple = target.querySelector('.mdc-button__ripple');
+      task.rippleOpacity = ripple ? getComputedStyle(ripple, '::before').opacity : '0';
       // Clip instead of hiding with display/visibility/opacity, so menu readiness
       // checks still work. Only menus referenced by our triggers are affected.
       task.style = document.createElement('style');
@@ -266,8 +286,8 @@
         if (!task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
         // Keep closing animations clipped too, without delaying the High setting.
-        if (valid() && ownsMenu && !task.userOwnsMenu) {
-          await waitFor(() => !visible(task.menu), 300);
+        if (valid() && (ownsMenu || target.getAttribute('aria-expanded') === 'false') && !task.userOwnsMenu) {
+          await waitFor(() => [...task.surfaces.keys()].every(surface => !visible(surface)), 300);
         }
         const active = document.activeElement;
         if (valid() && ownsMenu && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
@@ -351,7 +371,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.3',
+    version: '1.4.4',
     stop() {
       stopped = true;
       if (run) {

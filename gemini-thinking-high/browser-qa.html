@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gemini transition QA</title>
+<style>body{font:16px system-ui;background:#181818;color:#eee;margin:8px}#results{position:absolute;right:8px;top:0;max-height:80px;overflow:auto;background:#181818}iframe{width:48%;height:calc((100vh - 110px)/4 - 10px);border:1px solid #555}li{margin:4px}</style>
+<h1>Gemini transition QA</h1>
+<p id="report">Running all transition scenarios…</p>
+<ul id="results"></ul>
+<script>
+  const cases = ['standard', 'nested', 'closing-shell', 'detached-menu', 'portal', 'delayed-focus', 'overlay-shadow', 'hovered'];
+  const frames = new Map();
+  const results = new Map();
+  addEventListener('message', event => {
+    const result = event.data;
+    if (!result?.geminiHighQA || frames.get(result.scenario)?.contentWindow !== event.source) return;
+    results.set(result.scenario, result);
+    document.getElementById('results').replaceChildren(...[...results.values()].map(item => {
+      const row = document.createElement('li');
+      row.textContent = item.scenario + ': ' + (item.failures.length ? 'FAIL — ' + item.failures.join('; ') : 'PASS') + ' (' + item.samples + ' switch frames)';
+      return row;
+    }));
+    if (results.size === cases.length) document.getElementById('report').textContent =
+      [...results.values()].every(item => !item.failures.length) ? 'PASS: all ' + cases.length + ' transition scenarios' : 'FAIL: transition artifacts detected';
+  });
+  for (const scenario of cases) {
+    const frame = document.createElement('iframe');
+    frame.src = './browser-test.html?case=' + scenario;
+    frame.title = scenario;
+    frames.set(scenario, frame);
+    document.body.append(frame);
+  }
+</script>

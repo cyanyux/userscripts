@@ -25,7 +25,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       listeners.get(type).add(listener);
     },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
-    getElementById(id) { return [root, submenu, dialog].find(menu => menu.attrs.id === String(id)) || null; },
+    getElementById(id) { return [root, submenu, dialog].find(menu => menu.isConnected && menu.attrs.id === String(id)) || null; },
     querySelector() { stats.pickerQueries++; return state.pickerMissing ? null : picker; },
     querySelectorAll(selector) {
       return [root, submenu, dialog].filter(element =>
@@ -65,9 +65,17 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       return this.shown && (!this.parent || this.parent.checkVisibility());
     }
     matches() { return this.attrs.disabled || this.attrs['aria-disabled'] === 'true'; }
-    closest() { return this.attrs.role === 'menu' ? this : this.parent?.closest() || null; }
+    get parentElement() { return this.parent; }
+    closest(selector) {
+      const matches = selector === '[role="menu"]' ? this.attrs.role === 'menu'
+        : selector.split(',').some(part => (this.attrs.class || '').split(' ').includes(part.trim().slice(1)));
+      return matches ? this : this.parent?.closest(selector) || null;
+    }
     contains(element) {
       return element === this || this.children.some(child => child.contains(element));
+    }
+    querySelector(selector) {
+      return this.children.find(child => (child.attrs.class || '').split(' ').includes(selector.slice(1))) || null;
     }
     querySelectorAll(selector) {
       stats.menuQueries++;
@@ -88,10 +96,11 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const body = new Element();
   document.body = body;
   document.activeElement = body;
-  const root = new Element({ role: 'menu', id: 'mode-menu' });
+  const shell = new Element({ class: 'popover-menu' });
+  const root = new Element({ role: 'menu', id: 'mode-menu' }, shell);
   const submenu = new Element({ role: 'menu', id: 'thinking-menu' }, root);
   const dialog = new Element({ role: 'dialog' });
-  root.shown = submenu.shown = dialog.shown = false;
+  shell.shown = root.shown = submenu.shown = dialog.shown = false;
   let picker = new Element({ 'aria-controls': 'mode-menu', 'aria-expanded': 'false' });
   const model = new Element({ role: 'menuitemradio' }, root);
   model.textContent = 'Everyday help 4 Hydrogen';
@@ -106,6 +115,9 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   high.checkVisibility = () => state.highReady && originalHighVisible();
   function close() {
     root.shown = submenu.shown = false;
+    if (state.delayedShellClose) addTimer(() => { shell.shown = false; }, 180);
+    else shell.shown = false;
+    if (state.detachMenuOnClose) root.isConnected = false;
     picker.setAttribute('aria-expanded', 'false');
   }
   function setLabel(isHigh) {
@@ -124,7 +136,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         if ([...stats.styles].some(style => style.textContent.includes('clip-path:'))) stats.mutedOpens++;
         if (picker.getAttribute('data-gemini-high-auto-switch') !== null) stats.markedOpens++;
         state.openedFor = location.href;
-        root.shown = true;
+        shell.shown = root.shown = true;
         picker.setAttribute('aria-expanded', 'true');
         document.activeElement = thinking;
       }
@@ -148,6 +160,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const context = vm.createContext({
     window, document, location,
     queueMicrotask,
+    getComputedStyle: () => ({ backgroundColor: 'rgba(0, 0, 0, 0)' }),
     CSS: { escape: value => value }, // Fixture IDs are already valid CSS identifiers.
     Date: { now: () => now },
     console: { warn: (...args) => stats.warnings.push(args) },
@@ -203,7 +216,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const start = () => vm.runInContext(source, context);
   start();
   return {
-    stats, state, location, document, root, submenu, thinking, high, dialog, timers,
+    stats, state, location, document, root, shell, submenu, thinking, high, dialog, timers,
     advance, start, emit, close, setLabel, observers,
     mutate(element) {
       notify(element, { type: 'childList' });
@@ -236,7 +249,7 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.3');
+  assert.equal(h.version(), '1.4.4');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -612,5 +625,49 @@ test('cleanup after trusted cancellation leaves a newly opened modal alone', asy
   assert.equal(h.stats.highClicks.length, 0);
   assert.equal(h.document.activeElement, h.dialog);
   assert.equal(h.stats.styles.size, 0);
+  h.stop();
+});
+
+for (const detached of [false, true]) {
+  test(`keeps a closing shell masked after its menu is ${detached ? 'detached' : 'hidden'}`, async () => {
+    const h = harness();
+    h.state.delayedShellClose = true;
+    h.state.detachMenuOnClose = detached;
+    await h.advance(0);
+    assert.equal(h.isHigh(), true);
+    assert.equal(h.shell.shown, true);
+    assert.equal(h.autoStyleCount(), 1);
+    assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), '');
+    await h.advance(250);
+    assert.equal(h.autoStyleCount(), 0);
+    assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), null);
+    h.stop();
+  });
+}
+
+test('stop restores pre-existing shell markers during delayed closing', async () => {
+  const h = harness();
+  h.state.delayedShellClose = true;
+  h.shell.setAttribute('data-gemini-high-menu-mask', 'existing');
+  await h.advance(0);
+  assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), '');
+  h.stop();
+  await h.advance(0);
+  assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), 'existing');
+  assert.equal(h.stats.styles.size, 0);
+});
+
+test('a popup during closing cancels cleanup without moving its focus', async () => {
+  const h = harness();
+  h.state.delayedShellClose = true;
+  await h.advance(0);
+  const clicks = h.stats.pickerClicks;
+  h.dialog.shown = true;
+  h.dialog.focus();
+  await h.advance(100);
+  assert.equal(h.stats.pickerClicks, clicks);
+  assert.equal(h.document.activeElement, h.dialog);
+  assert.equal(h.autoStyleCount(), 0);
+  assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), null);
   h.stop();
 });
