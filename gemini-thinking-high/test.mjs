@@ -236,7 +236,7 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.2');
+  assert.equal(h.version(), '1.4.3');
   assert.equal(h.autoStyleCount(), 0);
 });
 

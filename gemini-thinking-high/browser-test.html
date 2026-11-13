@@ -10,13 +10,17 @@
   .dropdown-icon { display: inline-block; transition: transform .3s; }
   button[aria-expanded="true"] .dropdown-icon { transform: scaleY(-1); }
   .mdc-button__ripple::before { content: ''; position: absolute; inset: 0; background: #888; opacity: .3; }
+  /* Keep the border painted even without focus, to deterministically exercise
+     the separate Material layer used by Gemini's :focus-visible selector. */
+  .mat-focus-indicator::before { content: ''; position: absolute; inset: 0; border: 2px solid #a8c7fa; border-radius: 24px; }
 </style>
 <h1>Gemini userscript CSS regression</h1>
 <p id="report">Running…</p>
 <button data-test-id="bard-mode-menu-button" aria-label="Open mode picker, currently Hydrogen"
         aria-controls="mode-menu" aria-expanded="false">
-  <span class="mdc-button__ripple"></span>Hydrogen <span class="dropdown-icon">⌄</span>
+  <span class="mdc-button__ripple"></span><span class="mat-focus-indicator"></span>Hydrogen <span class="dropdown-icon">⌄</span>
 </button>
+<button id="unrelated-control">Other control<span class="mat-focus-indicator"></span></button>
 <div class="popover-menu" id="mode-box" hidden>
   <gem-menu id="mode-menu" role="menu">
     <button role="menuitemradio" id="model">4 Hydrogen</button>
@@ -38,6 +42,8 @@
   const high = document.getElementById('high');
   const unrelatedBox = document.getElementById('unrelated-box');
   const unrelated = document.getElementById('unrelated-menu');
+  const indicator = picker.querySelector('.mat-focus-indicator');
+  const otherIndicator = document.querySelector('#unrelated-control .mat-focus-indicator');
   const failures = new Set();
   let samples = 0;
   let modelClicks = 0;
@@ -70,6 +76,8 @@
       check(getComputedStyle(unrelatedBox).clipPath === 'none', 'unrelated wrapper clipped');
       check(getComputedStyle(picker.querySelector('.dropdown-icon')).transform === 'none', 'arrow animated');
       check(getComputedStyle(picker.querySelector('.mdc-button__ripple'), '::before').opacity === '0', 'ripple visible');
+      check(getComputedStyle(indicator, '::before').opacity === '0', 'Material focus ring visible during switch');
+      check(getComputedStyle(otherIndicator, '::before').opacity === '1', 'unrelated focus ring hidden');
     }
     if (performance.now() < end) requestAnimationFrame(sample);
   }
@@ -79,6 +87,7 @@
     check(picker.getAttribute('aria-label').endsWith(' High'), 'High not selected');
     check(modelClicks === 0, 'model changed');
     check(!picker.hasAttribute('data-gemini-high-auto-switch'), 'animation marker leaked');
+    check(getComputedStyle(indicator, '::before').opacity === '0', 'Material focus ring visible after switch');
     picker.click();
     check(getComputedStyle(modeBox).clipPath === 'none', 'manual menu clipped');
     check(getComputedStyle(picker.querySelector('.dropdown-icon')).transitionDuration === '0.3s', 'manual animation overridden');
@@ -87,9 +96,10 @@
     window.__geminiAlwaysHighThinking?.stop();
     check(document.querySelectorAll('[data-gemini-high-pointer-focus]').length === 0, 'focus marker leaked');
     check(document.styleSheets.length === 1, 'stylesheet leaked');
+    check(getComputedStyle(indicator, '::before').opacity === '1', 'focus ring not restored on stop');
     document.getElementById('report').textContent = failures.size
       ? 'FAIL: ' + [...failures].join('; ')
-      : 'PASS: ' + version + '; owned menus masked; unrelated menus untouched; manual styles restored; no model clicks or leaked styles.';
+      : 'PASS: ' + version + '; owned menus masked; unrelated menus untouched; Material ring suppressed; manual styles restored; no model clicks or leaked styles.';
   }, 1000);
 </script>
 <script src="./gemini-thinking-high.user.js"></script>

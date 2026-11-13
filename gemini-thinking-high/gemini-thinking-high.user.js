@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.2
+// @version      1.4.3
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -111,7 +111,10 @@
     if (!pointerStyle) {
       pointerStyle = document.createElement('style');
       pointerStyle.textContent = '[' + POINTER_FOCUS + ']:focus-visible, [' + POINTER_FOCUS + ']'
-        + ' [role^="menuitem"]:focus-visible { outline: none !important; box-shadow: none !important; }';
+        + ' [role^="menuitem"]:focus-visible { outline: none !important; box-shadow: none !important; }'
+        // Material draws a separate border even when the button has no outline.
+        + '[' + POINTER_FOCUS + '] .mat-focus-indicator::before, [' + POINTER_FOCUS + ']'
+        + ' .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
       document.documentElement.append(pointerStyle);
     }
     const menu = controlledMenu(button);
@@ -166,6 +169,7 @@
           + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; }'
           + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
           + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
+          + '[' + AUTO_SWITCH + '] .mat-focus-indicator::before,'
           + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
       }
       return controlledMenu(trigger);
@@ -347,7 +351,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.2',
+    version: '1.4.3',
     stop() {
       stopped = true;
       if (run) {
