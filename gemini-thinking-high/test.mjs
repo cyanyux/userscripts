@@ -52,13 +52,15 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     }
     getAttribute(name) { return this.attrs[name] ?? null; }
     setAttribute(name, value) {
+      const oldValue = this.getAttribute(name);
       this.attrs[name] = String(value);
-      notify(this, { type: 'attributes', attributeName: name });
+      notify(this, { type: 'attributes', attributeName: name, oldValue });
     }
     removeAttribute(name) {
       if (!(name in this.attrs)) return;
+      const oldValue = this.getAttribute(name);
       delete this.attrs[name];
-      notify(this, { type: 'attributes', attributeName: name });
+      notify(this, { type: 'attributes', attributeName: name, oldValue });
     }
     checkVisibility() {
       stats.layoutReads++;
@@ -127,6 +129,10 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   function wirePicker() {
     picker.click = () => {
       stats.pickerClicks++;
+      if (state.ignoredPickerClicks > 0) {
+        state.ignoredPickerClicks--;
+        return;
+      }
       if (root.shown) {
         if (state.cleanupThrows) throw new Error('Simulated cleanup exception');
         close();
@@ -148,6 +154,10 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
     setLabel(true);
     high.setAttribute('aria-checked', 'true');
     close();
+    if (state.resetHighOnce) {
+      state.resetHighOnce = false;
+      addTimer(() => setLabel(false), 50);
+    }
   };
   wirePicker();
   setLabel(initialHigh);
@@ -249,7 +259,7 @@ test('selects High without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.4');
+  assert.equal(h.version(), '1.4.5');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -573,6 +583,43 @@ for (const popup of ['dialog', 'alertdialog', 'native-dialog', 'menu']) {
     h.stop();
   });
 }
+
+test('recovers promptly when the first picker click is ignored during startup', async () => {
+  const h = harness();
+  h.state.ignoredPickerClicks = 1;
+  await h.advance(0);
+  assert.equal(h.stats.pickerClicks, 1);
+  assert.equal(h.isHigh(), false);
+  await h.advance(1000);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.pickerClicks, 2);
+  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.autoStyleCount(), 0);
+});
+
+test('retries promptly if initialization resets High during menu cleanup', async () => {
+  const h = harness();
+  h.state.delayedShellClose = true;
+  h.state.resetHighOnce = true;
+  await h.advance(500);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.highClicks.length, 2);
+  assert.equal(h.autoStyleCount(), 0);
+});
+
+test('re-enabling the picker grants another attempt after the retry budget is spent', async () => {
+  const h = harness({ thinkingReady: false });
+  await h.advance(40_000);
+  assert.equal(h.stats.mutedOpens, 3);
+  h.picker().setAttribute('aria-disabled', 'true');
+  await h.advance(0);
+  assert.equal(h.stats.mutedOpens, 3);
+  h.state.thinkingReady = true;
+  h.picker().removeAttribute('aria-disabled');
+  await h.advance(0);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.mutedOpens, 4);
+});
 
 for (const stage of ['thinking', 'high']) {
   test(`does not click ${stage} if a modal appears after the probe succeeds`, async () => {

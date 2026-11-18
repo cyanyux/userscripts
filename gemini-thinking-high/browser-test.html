@@ -73,9 +73,12 @@
   const failures = new Set();
   let samples = 0;
   let modelClicks = 0;
+  let pickerClicks = 0;
   let completed = false;
   function check(condition, message) { if (!condition) failures.add(message); }
   picker.onclick = () => {
+    pickerClicks++;
+    if (scenario === 'startup-retry' && pickerClicks === 1) return;
     modeBox.hidden = !modeBox.hidden;
     picker.classList.toggle('pressed', !modeBox.hidden);
     if (overlay) overlay.hidden = modeBox.hidden;
@@ -109,7 +112,8 @@
     if (overlay) overlay.hidden = true;
     picker.setAttribute('aria-expanded', 'false');
   };
-  const end = performance.now() + 900;
+  const duration = scenario === 'startup-retry' ? 1400 : 900;
+  const end = performance.now() + duration;
   function sample() {
     // Sample through cleanup too: a successful High label is not proof that
     // the menu's colored shell has stopped painting.
@@ -140,6 +144,7 @@
   setTimeout(() => {
     check(samples > 0, 'automatic switch not sampled');
     check(picker.getAttribute('aria-label').endsWith(' High'), 'High not selected');
+    if (scenario === 'startup-retry') check(pickerClicks === 2, 'startup retry did not open the picker exactly once');
     check(modelClicks === 0, 'model changed');
     check(!picker.hasAttribute('data-gemini-high-auto-switch'), 'animation marker leaked');
     check(getComputedStyle(indicator, '::before').opacity === '0', 'Material focus ring visible after switch');
@@ -156,6 +161,6 @@
       ? 'FAIL: ' + [...failures].join('; ')
       : 'PASS: ' + version + '; ' + scenario + '; ' + samples + ' switch frames; surfaces and Material ring masked through cleanup; manual styles restored; no model clicks or leaked styles.';
     parent.postMessage({geminiHighQA: true, scenario, failures: [...failures], samples, version}, '*');
-  }, 1000);
+  }, duration + 100);
 </script>
 <script src="./gemini-thinking-high.user.js"></script>

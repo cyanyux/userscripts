@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.4
+// @version      1.4.5
 // @description  Keep Gemini's remembered model; automatically set its thinking level to High.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -58,8 +58,17 @@
     && item.closest('[role="menu"]') === menu && matches(item);
   const popupOpen = () => [...document.querySelectorAll(POPUPS)]
     .some(visible);
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver(records => {
     if (stopped || document.hidden) return;
+    // A picker that becomes enabled again may have finished loading.
+    if (!run && failures && !button.matches(':disabled, [aria-disabled="true"]')
+      && records.some(record => record.target === button && (
+        (record.attributeName === 'disabled' && record.oldValue !== null)
+        || (record.attributeName === 'aria-disabled' && record.oldValue === 'true')
+      ))) {
+      failures = 0;
+      retryAt = 0;
+    }
     if (!keyboardInput && pointerStyle) markPointerFocus();
     schedule();
   });
@@ -145,6 +154,8 @@
     const task = { button: target, url: location.href, cancelled: false, userOwnsMenu: false, surfaces: new Map() };
     run = task;
     const focus = document.activeElement;
+    let retrySoon = false;
+    let confirmed = false;
     const valid = () => !stopped && !task.cancelled && !document.hidden
       && location.href === task.url && target.isConnected && target === button;
     function deferToPopup() {
@@ -247,6 +258,17 @@
       target.setAttribute(AUTO_SWITCH, '');
       maskMenu(target);
       target.click();
+      if (failures === 0 && target.getAttribute('aria-expanded') === 'false') {
+        // Gemini can render the picker before its click handler is ready.
+        const opened = await waitFor(() => {
+          task.menu = maskMenu(target);
+          return target.getAttribute('aria-expanded') !== 'false' || visible(task.menu);
+        }, 600);
+        if (!opened || !canContinue()) {
+          retrySoon = !opened;
+          return;
+        }
+      }
       const thinking = await waitFor(() => {
         task.menu = maskMenu(target);
         if (task.menu) markPointerFocus();
@@ -267,7 +289,7 @@
         || !ownedOption(thinking, target, task.menu, thinkingOption)
         || !ownedOption(high, thinking, task.submenu, highOption)) return;
       if (high.getAttribute('aria-checked') !== 'true') high.click();
-      const confirmed = await waitFor(() => HIGH_LABEL.test(label(target)));
+      confirmed = await waitFor(() => HIGH_LABEL.test(label(target)));
       if (!canContinue()) return;
       if (!confirmed && valid()) console.warn('[Gemini Always High] High was not confirmed.');
     } catch (error) {
@@ -277,11 +299,6 @@
         // A popup may also arrive after timeout/cancellation, before cleanup.
         // Leave background controls and the popup's focus under app/user control.
         deferToPopup();
-        // A timeout is retryable; it never permanently marks a model unsupported.
-        if (valid()) {
-          failures = HIGH_LABEL.test(label(target)) ? 0 : failures + 1;
-          retryAt = Date.now() + 5000;
-        }
         const ownsMenu = task.menu && controlledMenu(target) === task.menu;
         if (!task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
@@ -303,6 +320,13 @@
       } finally {
         try { unmute(task); }
         finally {
+          if (valid()) {
+            // Check after closing: startup can overwrite a just-confirmed High.
+            const applied = HIGH_LABEL.test(label(target));
+            const quickRetry = failures === 0 && (retrySoon || confirmed);
+            failures = applied ? 0 : failures + 1;
+            retryAt = applied || quickRetry ? 0 : Date.now() + 5000;
+          }
           run = undefined;
           schedule();
         }
@@ -324,7 +348,8 @@
       button = current;
       key = '';
       if (button) observer.observe(button, {
-        attributes: true, attributeFilter: ['aria-label', 'aria-disabled', 'disabled', 'aria-controls', 'aria-expanded'],
+        attributes: true, attributeOldValue: true,
+        attributeFilter: ['aria-label', 'aria-disabled', 'disabled', 'aria-controls', 'aria-expanded'],
         childList: true, characterData: true, subtree: true,
       });
     }
@@ -371,7 +396,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.4',
+    version: '1.4.5',
     stop() {
       stopped = true;
       if (run) {
