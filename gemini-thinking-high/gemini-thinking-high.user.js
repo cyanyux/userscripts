@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.5.3
-// @description  Default Gemini's thinking to Medium while respecting manual choices and the remembered model.
+// @version      1.6.0
+// @description  Remember the thinking level for new chats and let Gemini restore existing conversations.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
 // @grant        none
@@ -18,8 +18,17 @@
   const POPUPS = '[role="menu"], [role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]';
   const RADIO_ITEM = '[role="menuitemradio"]';
   const THINKING = /^(Thinking level|思考程度|思考層級|思考等级|思考级别)$/i;
-  const MEDIUM = /^(Medium|中等|中度|中)(?:\s|$)/i;
-  const MEDIUM_LABEL = /(?:^|\s)(Medium|中等|中度|中)\s*$/i;
+  const LEVELS = [
+    ['Low', 'Low|低等|低度|低'],
+    ['Medium', 'Medium|中等|中度|中'],
+    ['High', 'High|高等|高度|高'],
+  ].map(([name, labels]) => ({
+    name,
+    option: new RegExp('^(?:' + labels + ')(?:\\s|$)', 'i'),
+    suffix: new RegExp('(?:^|\\s)(?:' + labels + ')\\s*$', 'i'),
+  }));
+  const PREFERENCE_KEY = 'gemini-fixed-thinking:level';
+  const isDraftPage = () => /^(?:\/(?:u\/\d+\/)?app\/?|\/)$/.test(location.pathname);
   const INSTANCE = '__geminiAlwaysHighThinking';
   const AUTO_SWITCH = 'data-gemini-high-auto-switch';
   const MENU_MASK = 'data-gemini-high-menu-mask';
@@ -36,13 +45,19 @@
   let pauseUntil = 0;
   let retryAt = 0;
   let failures = 0;
-  let manualOverride = false;
+  let draftPage = isDraftPage();
+  let tabLevel = readLevel('sessionStorage');
+  let desiredLevel = draftPage
+    ? tabLevel || readLevel('localStorage') || LEVELS[1]
+    : undefined;
   let keyboardInput = false;
   let pointerStyle;
   const focusMarkers = new Set();
   const discoveryDeadline = Date.now() + 10_000;
   const text = element => (element?.textContent || '').trim().replace(/\s+/g, ' ');
   const label = element => element?.getAttribute('aria-label') || text(element);
+  // Gemini omits the level from its picker label when Low is selected.
+  const pickerLevel = value => LEVELS.find(level => level.suffix.test(value)) || LEVELS[0];
   const visible = element => !!element?.isConnected && element.checkVisibility({
     checkVisibilityCSS: true, checkOpacity: true,
   });
@@ -55,7 +70,6 @@
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const thinkingOption = item => ['menuitem', 'menuitemradio'].includes(item.getAttribute('role'))
     && THINKING.test(text(item));
-  const mediumOption = item => item.getAttribute('role') === 'menuitemradio' && MEDIUM.test(text(item));
   const ownedOption = (item, trigger, menu, matches) => enabled(trigger) && enabled(item)
     && visible(menu) && controlledMenu(trigger) === menu
     && item.closest('[role="menu"]') === menu && matches(item);
@@ -78,7 +92,40 @@
   // Startup only: stop observing the page as soon as the picker exists, or
   // after ten seconds on pages without one (for example the sign-in page).
   const discovery = new MutationObserver(() => schedule());
-  discovery.observe(document, { childList: true, subtree: true });
+
+  function readLevel(storage) {
+    try {
+      const name = window[storage].getItem(PREFERENCE_KEY);
+      return LEVELS.find(level => level.name === name);
+    } catch {
+      // Storage can be unavailable. The current page still handles manual choices.
+      return undefined;
+    }
+  }
+
+  function writeLevel(storage, level) {
+    try {
+      window[storage].setItem(PREFERENCE_KEY, level.name);
+    } catch {
+      // Keep the in-memory choice if browser storage is blocked.
+    }
+  }
+
+  function rememberDraft(level) {
+    if (tabLevel === level) return;
+    tabLevel = level;
+    writeLevel('sessionStorage', level);
+  }
+
+  function syncDraftPage() {
+    const isDraft = isDraftPage();
+    if (isDraft === draftPage) return;
+    draftPage = isDraft;
+    // In-tab New chat inherits its setting from Gemini. Take that value from
+    // the picker as it settles and save it for a future reload of this tab.
+    desiredLevel = undefined;
+    key = '';
+  }
 
   function schedule() {
     if (stopped || document.hidden || scheduled) return;
@@ -107,7 +154,14 @@
       // activation also produces a trusted click; our own .click() does not.
       thinkingChoice = manualThinkingOption(event.target);
       if (!thinkingChoice) return;
-      manualOverride = !mediumOption(thinkingChoice);
+      const chosen = LEVELS.find(level => level.option.test(text(thinkingChoice)));
+      if (!chosen) return;
+      syncDraftPage();
+      writeLevel('localStorage', chosen);
+      if (draftPage) {
+        desiredLevel = chosen;
+        rememberDraft(chosen);
+      }
       key = '';
     } else {
       keyboardInput = event.type === 'keydown';
@@ -176,13 +230,15 @@
     }
   }
 
-  async function setMedium(target) {
+  async function setLevel(target, level) {
     const task = { button: target, url: location.href, cancelled: false, userOwnsMenu: false, surfaces: new Map() };
     run = task;
     const focus = document.activeElement;
     let retrySoon = false;
     let confirmed = false;
-    const valid = () => !stopped && !task.cancelled && !document.hidden
+    const selected = () => pickerLevel(label(target)) === level;
+    const matchesLevel = item => item.getAttribute('role') === 'menuitemradio' && level.option.test(text(item));
+    const valid = () => !stopped && !task.cancelled && !document.hidden && isDraftPage()
       && location.href === task.url && target.isConnected && target === button;
     function deferToPopup() {
       const blocked = [...document.querySelectorAll(POPUPS)].some(popup =>
@@ -272,7 +328,7 @@
       });
     }
     try {
-      // All clicks are limited to the picker, its Thinking level trigger, and Medium.
+      // All clicks are limited to the picker, its Thinking level trigger, and the desired level.
       if (!valid() || !enabled(target) || popupOpen()) return;
       markPointerFocus();
       const pickerStyle = getComputedStyle(target);
@@ -312,17 +368,17 @@
       // A successful probe can become stale before the awaited continuation.
       if (!canContinue() || !ownedOption(thinking, target, task.menu, thinkingOption)) return;
       thinking.click();
-      const medium = await waitFor(() => {
+      const option = await waitFor(() => {
         task.submenu = maskMenu(thinking);
-        return visible(task.submenu) && menuItems(task.submenu).find(mediumOption);
+        return visible(task.submenu) && menuItems(task.submenu).find(matchesLevel);
       });
-      if (!medium || !canContinue()
+      if (!option || !canContinue()
         || !ownedOption(thinking, target, task.menu, thinkingOption)
-        || !ownedOption(medium, thinking, task.submenu, mediumOption)) return;
-      if (medium.getAttribute('aria-checked') !== 'true') medium.click();
-      confirmed = await waitFor(() => MEDIUM_LABEL.test(label(target)));
+        || !ownedOption(option, thinking, task.submenu, matchesLevel)) return;
+      if (option.getAttribute('aria-checked') !== 'true') option.click();
+      confirmed = await waitFor(selected);
       if (!canContinue()) return;
-      if (!confirmed && valid()) console.warn('[Gemini Thinking] Medium was not confirmed.');
+      if (!confirmed && valid()) console.warn('[Gemini Thinking] ' + level.name + ' was not confirmed.');
     } catch (error) {
       console.warn('[Gemini Thinking]', error);
     } finally {
@@ -331,7 +387,7 @@
         // Leave background controls and the popup's focus under app/user control.
         deferToPopup();
         const ownsMenu = task.menu && controlledMenu(target) === task.menu;
-        if (!task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
+        if (location.href === task.url && !task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
         // Closing the menu and clearing the pressed background can happen in different frames.
         if (valid() && (ownsMenu || target.getAttribute('aria-expanded') !== 'true') && !task.userOwnsMenu) {
@@ -353,8 +409,8 @@
         try { unmute(task); }
         finally {
           if (valid()) {
-            // Check after closing: startup can overwrite a just-confirmed Medium.
-            const applied = MEDIUM_LABEL.test(label(target));
+            // Check after closing: startup can overwrite the just-confirmed level.
+            const applied = selected();
             const quickRetry = failures === 0 && (retrySoon || confirmed);
             failures = applied ? 0 : failures + 1;
             retryAt = applied || quickRetry ? 0 : Date.now() + 5000;
@@ -368,8 +424,9 @@
 
   function tick() {
     if (stopped || document.hidden) return;
-    const current = button?.isConnected ? button : document.querySelector(PICKER);
-    if (current || Date.now() >= discoveryDeadline) discovery.disconnect();
+    syncDraftPage();
+    const current = draftPage ? (button?.isConnected ? button : document.querySelector(PICKER)) : undefined;
+    if (!draftPage || current || Date.now() >= discoveryDeadline) discovery.disconnect();
     if (current !== button) {
       if (run) {
         run.cancelled = true;
@@ -393,18 +450,23 @@
       }
       return;
     }
-    if (manualOverride) return;
     const currentLabel = label(button);
+    if (!currentLabel) return;
+    const currentLevel = pickerLevel(currentLabel);
+    rememberDraft(desiredLevel || currentLevel);
+    // No layout reads or menu scans when the picker already has its desired level.
+    if (!desiredLevel || currentLevel === desiredLevel) {
+      key = '';
+      return;
+    }
     const nextKey = location.href + '\n' + currentLabel;
     if (nextKey !== key) {
       key = nextKey;
       failures = 0;
       retryAt = 0;
     }
-    // No layout reads or menu scans on the common, already-Medium path.
-    if (MEDIUM_LABEL.test(currentLabel) || failures >= 3) return;
-    if (Date.now() < pauseUntil || Date.now() < retryAt) return;
-    if (enabled(button) && !popupOpen()) void setMedium(button);
+    if (failures >= 3 || Date.now() < pauseUntil || Date.now() < retryAt) return;
+    if (enabled(button) && !popupOpen()) void setLevel(button, desiredLevel);
   }
 
   function visibilityChanged() {
@@ -419,7 +481,7 @@
     }
     // A newly visible tab gets another chance after transient loading failures.
     key = '';
-    if (!button && Date.now() < discoveryDeadline) {
+    if (isDraftPage() && !button && Date.now() < discoveryDeadline) {
       discovery.observe(document, { childList: true, subtree: true });
     }
     interval = setInterval(tick, 1000);
@@ -430,8 +492,9 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('click', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
+  window.navigation?.addEventListener('currententrychange', schedule);
   window[INSTANCE] = {
-    version: '1.5.3',
+    version: '1.6.0',
     stop() {
       stopped = true;
       if (run) {
@@ -447,6 +510,7 @@
       document.removeEventListener('keydown', interact, true);
       document.removeEventListener('click', interact, true);
       document.removeEventListener('visibilitychange', visibilityChanged);
+      window.navigation?.removeEventListener('currententrychange', schedule);
     },
   };
   visibilityChanged();

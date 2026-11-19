@@ -6,7 +6,11 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('./gemini-thinking-high.user.js', import.meta.url), 'utf8');
 
 // Exercise the real userscript against a small accessible-menu DOM and fake clock.
-function harness({ initialMedium = false, thinkingReady = true, mediumReady = true } = {}) {
+function harness({
+  initialMedium = false, initialLevel = initialMedium ? 'Medium' : 'Low',
+  thinkingReady = true, mediumReady = true, path = '/app',
+  localValues = new Map(), tabValues = new Map(), storageBlocked = false,
+} = {}) {
   let now = 0;
   let sequence = 0;
   const timers = new Map();
@@ -17,7 +21,10 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
   }
   const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, mediumClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
   const state = { model: 'Hydrogen', thinkingReady, mediumReady, cleanupThrows: false };
-  const location = { href: 'https://gemini.google.com/app' };
+  const location = {
+    href: 'https://gemini.google.com' + path,
+    get pathname() { return new URL(this.href).pathname; },
+  };
   const document = {
     hidden: false,
     addEventListener(type, listener) {
@@ -116,7 +123,10 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
   const medium = new Element({ role: 'menuitemradio' }, submenu);
   medium.textContent = ' Medium Balanced depth ';
   const high = new Element({ role: 'menuitemradio' }, submenu);
+  high.textContent = 'High Extra thorough';
   const highLabel = new Element({}, high);
+  const low = new Element({ role: 'menuitemradio' }, submenu);
+  low.textContent = 'Low Fast and efficient';
   const originalVisible = thinking.checkVisibility.bind(thinking);
   thinking.checkVisibility = () => state.thinkingReady && originalVisible();
   const originalMediumVisible = medium.checkVisibility.bind(medium);
@@ -134,6 +144,8 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
     const level = isMedium ? 'Medium' : otherLevel;
     picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (level ? ' ' + level : ''));
     medium.setAttribute('aria-checked', String(isMedium));
+    high.setAttribute('aria-checked', String(level === 'High'));
+    low.setAttribute('aria-checked', String(!level || level === 'Low'));
   }
   function wirePicker() {
     picker.click = () => {
@@ -169,14 +181,28 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
       addTimer(() => setLabel(false), 50);
     }
   };
+  high.click = () => { setLabel(false, 'High'); close(); };
+  low.click = () => { setLabel(false); close(); };
   wirePicker();
-  setLabel(initialMedium);
+  setLabel(initialLevel === 'Medium', initialLevel === 'Low' ? '' : initialLevel);
   function addTimer(callback, delay, repeat = 0) {
     const id = ++sequence;
     timers.set(id, { callback, at: now + delay, repeat });
     return id;
   }
-  const window = {};
+  function storage(values) {
+    return {
+      getItem(key) {
+        if (storageBlocked) throw new Error('Storage blocked');
+        return values.get(key) ?? null;
+      },
+      setItem(key, value) {
+        if (storageBlocked) throw new Error('Storage blocked');
+        values.set(key, value);
+      },
+    };
+  }
+  const window = { localStorage: storage(localValues), sessionStorage: storage(tabValues) };
   const context = vm.createContext({
     window, document, location,
     queueMicrotask,
@@ -236,7 +262,7 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
   const start = () => vm.runInContext(source, context);
   start();
   return {
-    stats, state, location, document, root, shell, submenu, thinking, medium, highLabel, model, dialog, timers,
+    stats, state, location, document, root, shell, submenu, thinking, medium, highLabel, low, model, dialog, timers,
     advance, start, emit, close, setLabel, observers,
     mutate(element) {
       notify(element, { type: 'childList' });
@@ -270,7 +296,7 @@ test('selects Medium without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.5.3');
+  assert.equal(h.version(), '1.6.0');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -281,14 +307,14 @@ test('already-Medium idle path performs no layout reads or repeated picker queri
   assert.equal(h.stats.pickerQueries, 1);
 });
 
-test('recovers from same-URL resets, SPA navigation, and picker replacement', async () => {
+test('recovers from same-URL resets and draft picker replacement', async () => {
   const h = harness();
   await h.advance(2500);
   h.setLabel(false);
   await h.advance(2500);
   assert.equal(h.isMedium(), true);
   h.state.model = 'Argon';
-  h.location.href += '/existing-chat';
+  h.location.href += '?draft=next';
   h.replacePicker();
   await h.advance(2500);
   assert.equal(h.isMedium(), true);
@@ -309,9 +335,7 @@ test('respects a manual High selection after inactivity and tab visibility chang
   h.emit('visibilitychange');
   h.document.hidden = false;
   h.emit('visibilitychange');
-  h.location.href += '/new-chat-id';
   h.replacePicker();
-  h.setLabel(false, 'High');
   await h.advance(60_000);
   assert.equal(h.isHigh(), true);
   assert.equal(h.stats.mediumClicks.length, 0);
@@ -386,17 +410,108 @@ test('limits unsupported controls to three attempts', async () => {
   assert.equal(h.autoStyleCount(), 0);
 });
 
-test('cancels stale-route work without clicking Medium', async () => {
+test('cancels stale draft work without clicking or cleaning up in an existing chat', async () => {
   const h = harness({ mediumReady: false });
   await h.advance(1500);
   assert.equal(h.submenu.shown, true);
   h.location.href += '/another-chat';
   h.state.mediumReady = true;
   await h.advance(100);
-  assert.equal(h.isMedium(), true);
-  assert.equal(h.stats.mediumClicks.length, 1);
-  assert.equal(h.stats.mediumClicks[0].openedFor, h.location.href);
-  assert.equal(h.root.shown, false);
+  assert.equal(h.isMedium(), false);
+  assert.equal(h.stats.mediumClicks.length, 0);
+  assert.equal(h.stats.pickerClicks, 1);
+  assert.equal(h.autoStyleCount(), 0);
+});
+
+test('saved chats keep their own settings even when the global and tab preferences differ', async () => {
+  const localValues = new Map();
+  const blank = harness({ localValues });
+  await blank.advance(0);
+  blank.picker().click();
+  blank.thinking.click();
+  blank.emit('click', blank.low);
+  blank.setLabel(false);
+  blank.close();
+  const high = harness({ path: '/app/saved-high', initialLevel: 'High', localValues });
+  const medium = harness({ path: '/u/1/app/saved-medium', initialMedium: true, localValues });
+  await high.advance(30_000);
+  await medium.advance(30_000);
+  assert.equal(high.isHigh(), true);
+  assert.equal(medium.isMedium(), true);
+  for (const chat of [high, medium]) {
+    assert.equal(chat.stats.pickerQueries, 0);
+    assert.equal(chat.stats.pickerClicks, 0);
+  }
+});
+
+test('drafts restore their own choices and a fresh tab uses the most recent manual choice', async () => {
+  const localValues = new Map();
+  const firstValues = new Map();
+  const secondValues = new Map();
+  const first = harness({ localValues, tabValues: firstValues });
+  const second = harness({ localValues, tabValues: secondValues });
+  await first.advance(0);
+  await second.advance(0);
+  for (const [tab, choice, isMedium] of [[first, first.highLabel, false], [second, second.medium, true]]) {
+    tab.picker().click();
+    tab.thinking.click();
+    tab.emit('click', choice);
+    tab.setLabel(isMedium, isMedium ? '' : 'High');
+    tab.close();
+  }
+  await first.advance(3000);
+  assert.equal(first.isHigh(), true);
+  const firstRestored = harness({ localValues, tabValues: firstValues });
+  const secondRestored = harness({ localValues, tabValues: secondValues });
+  const newTab = harness({ localValues });
+  await firstRestored.advance(0);
+  await secondRestored.advance(0);
+  await newTab.advance(0);
+  assert.equal(firstRestored.isHigh(), true);
+  assert.equal(secondRestored.isMedium(), true);
+  assert.equal(newTab.isMedium(), true);
+});
+
+test('an in-tab New chat carries its native level into the next reload', async () => {
+  const tabValues = new Map();
+  const chat = harness({ path: '/app/ready-chat', initialLevel: 'High', tabValues });
+  await chat.advance(0);
+  chat.location.href = 'https://gemini.google.com/app';
+  await chat.advance(1000);
+  assert.equal(chat.stats.pickerClicks, 0);
+  const restored = harness({ tabValues });
+  await restored.advance(0);
+  assert.equal(restored.isHigh(), true);
+});
+
+test('Low can be remembered and restored without opening a picker already at Low', async () => {
+  const localValues = new Map();
+  const chat = harness({ path: '/app/ready-chat', initialLevel: 'High', localValues });
+  chat.picker().click();
+  chat.thinking.click();
+  chat.emit('click', chat.low);
+  chat.setLabel(false);
+  chat.close();
+  const alreadyLow = harness({ localValues });
+  const initiallyHigh = harness({ localValues, initialLevel: 'High' });
+  await alreadyLow.advance(0);
+  await initiallyHigh.advance(0);
+  assert.equal(alreadyLow.stats.pickerClicks, 0);
+  assert.match(initiallyHigh.picker().getAttribute('aria-label'), /Hydrogen$/);
+  assert.equal(initiallyHigh.stats.thinkingClicks, 1);
+});
+
+test('blocked storage keeps a manual choice working on the current draft', async () => {
+  const tab = harness({ storageBlocked: true });
+  await tab.advance(0);
+  assert.equal(tab.isMedium(), true);
+  tab.picker().click();
+  tab.thinking.click();
+  tab.emit('click', tab.highLabel);
+  tab.setLabel(false, 'High');
+  tab.close();
+  await tab.advance(3000);
+  assert.equal(tab.isHigh(), true);
 });
 
 test('leaves user menus and dialogs alone; defers while typing', async () => {

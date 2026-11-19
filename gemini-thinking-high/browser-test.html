@@ -41,6 +41,8 @@
   <gem-menu role="menu" id="unrelated-menu">Unrelated application menu</gem-menu>
 </div>
 <script>
+  // Exercise the real blank-chat route check while serving the fixture locally.
+  history.replaceState(history.state, '', '/app' + location.search);
   const picker = document.querySelector('[data-test-id]');
   const modeBox = document.getElementById('mode-box');
   const thinkingBox = document.getElementById('thinking-box');

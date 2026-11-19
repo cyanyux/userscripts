@@ -18,4 +18,4 @@ Removes the focus outline/ring on HTML5 `<video>` elements on all sites, includi
 
 ### [Gemini — Fixed Thinking](./gemini-thinking-high/README.md)
 
-Automatically set Gemini's thinking level to Medium while preserving the remembered model.
+Remember Gemini's thinking level for new chats and preserve each saved conversation's settings.
