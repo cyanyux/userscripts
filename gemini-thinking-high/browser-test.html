@@ -13,6 +13,7 @@
   button[aria-expanded="true"] .dropdown-icon { transform: scaleY(-1); }
   .mdc-button__ripple::before { content: ''; position: absolute; inset: 0; background: #888; opacity: 0; transition: opacity .12s; }
   .hovered .mdc-button__ripple::before { opacity: .08; }
+  .cdk-program-focused > .mdc-button__ripple::before { opacity: .08; transition: none; }
   /* Keep the border painted even without focus, to deterministically exercise
      the separate Material layer used by Gemini's :focus-visible selector. */
   .mat-focus-indicator::before { content: ''; position: absolute; inset: 0; border: 2px solid #a8c7fa; border-radius: 24px; }
@@ -94,6 +95,7 @@
   let highClicks = 0;
   let pickerClicks = 0;
   let completed = false;
+  let delayedFocusChecked = false;
   function check(condition, message) { if (!condition) failures.add(message); }
   picker.onclick = () => {
     pickerClicks++;
@@ -138,7 +140,19 @@
         if (!modeMenu.isConnected) modeBox.append(modeMenu);
       }, 180);
     } else modeBox.hidden = true;
-    if (scenario === 'delayed-focus') setTimeout(() => picker.focus(), 50);
+    if (scenario === 'delayed-focus') {
+      setTimeout(() => {
+        picker.focus();
+        picker.classList.add('cdk-program-focused');
+        check(!picker.hasAttribute('data-gemini-high-auto-switch'), 'focus did not arrive after cleanup');
+        check(getComputedStyle(ripple, '::before').opacity === initialRipple, 'delayed focus painted a fill');
+        delayedFocusChecked = true;
+        setTimeout(() => {
+          picker.blur();
+          picker.classList.remove('cdk-program-focused');
+        }, 160);
+      }, 50);
+    }
     if (scenario === 'delayed-pressed') setTimeout(() => picker.classList.remove('pressed'), 120);
     else picker.classList.remove('pressed');
     if (overlay) overlay.hidden = true;
@@ -178,6 +192,7 @@
   requestAnimationFrame(sample);
   setTimeout(() => {
     check(samples > 0, 'automatic switch not sampled');
+    if (scenario === 'delayed-focus') check(delayedFocusChecked, 'delayed focus was not checked');
     check(picker.getAttribute('aria-label').endsWith(' Medium'), 'Medium not selected');
     if (scenario === 'startup-retry') check(pickerClicks === 2, 'startup retry did not open the picker exactly once');
     check(modelClicks === 0, 'model changed');

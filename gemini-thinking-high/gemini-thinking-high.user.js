@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.5.1
+// @version      1.5.2
 // @description  Keep Gemini's thinking setting fixed while preserving its remembered model.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -125,7 +125,10 @@
         + ' [role^="menuitem"]:focus-visible { outline: none !important; box-shadow: none !important; }'
         // Material draws a separate border even when the button has no outline.
         + '[' + POINTER_FOCUS + '] .mat-focus-indicator::before, [' + POINTER_FOCUS + ']'
-        + ' .mat-mdc-focus-indicator::before { opacity: 0 !important; }';
+        + ' .mat-mdc-focus-indicator::before { opacity: 0 !important; }'
+        // A delayed programmatic focus can apply a fill after the switch mask is gone.
+        + PICKER + '[' + POINTER_FOCUS + '].cdk-program-focused:not(:hover)'
+        + ' > .mdc-button__ripple::before { opacity: 0 !important; transition: none !important; }';
       document.documentElement.append(pointerStyle);
     }
     const menu = controlledMenu(button);
@@ -403,7 +406,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.5.1',
+    version: '1.5.2',
     stop() {
       stopped = true;
       if (run) {
