@@ -265,7 +265,7 @@ test('selects Medium without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.5.0');
+  assert.equal(h.version(), '1.5.1');
   assert.equal(h.autoStyleCount(), 0);
 });
 

@@ -1,4 +1,4 @@
-# Gemini — Medium Thinking
+# Gemini — Fixed Thinking
 
 Automatically select **Thinking level → Medium** while preserving Gemini's remembered model.
 
@@ -8,7 +8,7 @@ Automatically select **Thinking level → Medium** while preserving Gemini's rem
 2. [Click here to install](https://github.com/cyanyux/userscripts/raw/main/gemini-thinking-high/gemini-thinking-high.user.js).
 3. Reload Gemini. The script includes update/download URLs for future updates.
 
-Tampermonkey still lists the script as **Gemini — Always High Thinking** so existing installations receive the update.
+If you already have **Gemini — Always High Thinking**, check for updates from its Tampermonkey dashboard row to upgrade to **Gemini — Fixed Thinking**.
 
 ## Behavior
 

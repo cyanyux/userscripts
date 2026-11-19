@@ -16,6 +16,6 @@ Hide disclaimer containers on ChatGPT, Gemini, and Claude.
 
 Removes the focus outline/ring on HTML5 `<video>` elements on all sites, including shadow DOM.
 
-### [Gemini — Medium Thinking](./gemini-thinking-high/README.md)
+### [Gemini — Fixed Thinking](./gemini-thinking-high/README.md)
 
 Automatically set Gemini's thinking level to Medium while preserving the remembered model.

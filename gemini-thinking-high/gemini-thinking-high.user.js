@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini — Always High Thinking
+// @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.5.0
-// @description  Keep Gemini's remembered model; automatically set its thinking level to Medium.
+// @version      1.5.1
+// @description  Keep Gemini's thinking setting fixed while preserving its remembered model.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
 // @grant        none
@@ -403,7 +403,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.5.0',
+    version: '1.5.1',
     stop() {
       stopped = true;
       if (run) {
