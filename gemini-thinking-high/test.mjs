@@ -9,7 +9,7 @@ const source = readFileSync(new URL('./gemini-thinking-high.user.js', import.met
 function harness({
   initialMedium = false, initialLevel = initialMedium ? 'Medium' : 'Low',
   thinkingReady = true, mediumReady = true, path = '/app',
-  localValues = new Map(), tabValues = new Map(), storageBlocked = false,
+  localValues = new Map(), tabValues = new Map(), storageBlocked = false, hasNavigation = false,
 } = {}) {
   let now = 0;
   let sequence = 0;
@@ -19,7 +19,7 @@ function harness({
   function notify(target, record) {
     for (const observer of observers) observer.notify(target, record);
   }
-  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, mediumClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
+  const stats = { layoutReads: 0, modelLayoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, mediumClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
   const state = { model: 'Hydrogen', thinkingReady, mediumReady, cleanupThrows: false };
   const location = {
     href: 'https://gemini.google.com' + path,
@@ -71,6 +71,7 @@ function harness({
     }
     checkVisibility() {
       stats.layoutReads++;
+      if (this === model) stats.modelLayoutReads++;
       return this.shown && (!this.parent || this.parent.checkVisibility());
     }
     matches() { return this.attrs.disabled || this.attrs['aria-disabled'] === 'true'; }
@@ -203,6 +204,14 @@ function harness({
     };
   }
   const window = { localStorage: storage(localValues), sessionStorage: storage(tabValues) };
+  if (hasNavigation) {
+    const navigation = new EventTarget();
+    location.navigate = path => {
+      location.href = 'https://gemini.google.com' + path;
+      navigation.dispatchEvent(new Event('currententrychange'));
+    };
+    window.navigation = navigation;
+  }
   const context = vm.createContext({
     window, document, location,
     queueMicrotask,
@@ -292,11 +301,12 @@ test('selects Medium without clicking a model option', async () => {
   await h.advance(0);
   assert.equal(h.isMedium(), true);
   assert.equal(h.stats.modelClicks, 0);
+  assert.equal(h.stats.modelLayoutReads, 0);
   assert.equal(h.root.shown, false);
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.6.0');
+  assert.equal(h.version(), '1.6.1');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -305,6 +315,35 @@ test('already-Medium idle path performs no layout reads or repeated picker queri
   await h.advance(60_000);
   assert.equal(h.stats.layoutReads, 0);
   assert.equal(h.stats.pickerQueries, 1);
+});
+
+test('saved chats with the Navigation API stay idle and rearm draft polling only on navigation', async () => {
+  const h = harness({ initialLevel: 'High', path: '/app/saved-chat', hasNavigation: true });
+  await h.advance(60_000);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.stats.pickerQueries, 0);
+  assert.equal(h.stats.layoutReads, 0);
+
+  h.location.navigate('/app');
+  await h.advance(0);
+  assert.equal(h.timers.size, 1);
+  assert.equal(h.stats.pickerQueries, 1);
+  assert.equal(h.stats.pickerClicks, 0);
+  assert.equal(h.isHigh(), true);
+
+  h.location.navigate('/app/another-saved-chat');
+  await h.advance(0);
+  assert.equal(h.timers.size, 0);
+
+  h.document.hidden = true;
+  h.emit('visibilitychange');
+  h.location.navigate('/app');
+  await h.advance(0);
+  assert.equal(h.timers.size, 0);
+  h.document.hidden = false;
+  h.emit('visibilitychange');
+  await h.advance(0);
+  assert.equal(h.timers.size, 1);
 });
 
 test('recovers from same-URL resets and draft picker replacement', async () => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.6.0
+// @version      1.6.1
 // @description  Remember the thinking level for new chats and let Gemini restore existing conversations.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -35,6 +35,7 @@
   const MENU_WRAPPERS = '.popover-menu, .submenu-container, .cdk-overlay-pane, .cdk-overlay-popover';
   const POINTER_FOCUS = 'data-gemini-high-pointer-focus';
   if (typeof window[INSTANCE]?.stop === 'function') window[INSTANCE].stop();
+  const navigation = window.navigation;
 
   let stopped = false;
   let interval;
@@ -46,7 +47,7 @@
   let retryAt = 0;
   let failures = 0;
   let draftPage = isDraftPage();
-  let tabLevel = readLevel('sessionStorage');
+  let tabLevel = draftPage ? readLevel('sessionStorage') : undefined;
   let desiredLevel = draftPage
     ? tabLevel || readLevel('localStorage') || LEVELS[1]
     : undefined;
@@ -66,15 +67,11 @@
     const id = trigger.getAttribute('aria-controls');
     return id ? document.getElementById(id) : null;
   };
-  const menuItems = menu => [...menu.querySelectorAll('[role="menuitem"], ' + RADIO_ITEM)]
-    .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const thinkingOption = item => ['menuitem', 'menuitemradio'].includes(item.getAttribute('role'))
     && THINKING.test(text(item));
-  const ownedOption = (item, trigger, menu, matches) => enabled(trigger) && enabled(item)
-    && visible(menu) && controlledMenu(trigger) === menu
-    && item.closest('[role="menu"]') === menu && matches(item);
-  const popupOpen = () => [...document.querySelectorAll(POPUPS)]
-    .some(visible);
+  const ownedOption = (item, trigger, menu, matches) => controlledMenu(trigger) === menu
+    && item.closest('[role="menu"]') === menu && matches(item)
+    && enabled(trigger) && enabled(item) && visible(menu);
   const observer = new MutationObserver(records => {
     if (stopped || document.hidden) return;
     // A picker that becomes enabled again may have finished loading.
@@ -92,6 +89,20 @@
   // Startup only: stop observing the page as soon as the picker exists, or
   // after ten seconds on pages without one (for example the sign-in page).
   const discovery = new MutationObserver(() => schedule());
+
+  function findMenuOption(menu, matches) {
+    for (const item of menu.querySelectorAll('[role="menuitem"], ' + RADIO_ITEM)) {
+      if (matches(item) && item.closest('[role="menu"]') === menu && enabled(item)) return item;
+    }
+    return undefined;
+  }
+
+  function popupOpen(menu, submenu) {
+    for (const popup of document.querySelectorAll(POPUPS)) {
+      if (popup !== menu && popup !== submenu && visible(popup)) return true;
+    }
+    return false;
+  }
 
   function readLevel(storage) {
     try {
@@ -125,6 +136,7 @@
     // the picker as it settles and save it for a future reload of this tab.
     desiredLevel = undefined;
     key = '';
+    updatePolling();
   }
 
   function schedule() {
@@ -142,8 +154,9 @@
     if (!submenu) return null;
     const picker = button?.isConnected ? button : document.querySelector(PICKER);
     const menu = picker && controlledMenu(picker);
-    if (!menu || menu === submenu || !enabled(option)) return null;
-    return menuItems(menu).some(item => thinkingOption(item) && controlledMenu(item) === submenu) ? option : null;
+    if (!menu || menu === submenu) return null;
+    const thinking = findMenuOption(menu, item => thinkingOption(item) && controlledMenu(item) === submenu);
+    return thinking && enabled(option) ? option : null;
   }
 
   function interact(event) {
@@ -164,6 +177,7 @@
       }
       key = '';
     } else {
+      if (!draftPage && !run) return;
       keyboardInput = event.type === 'keydown';
       if (keyboardInput) clearPointerFocus();
       else if (button && (button.contains(event.target)
@@ -241,8 +255,7 @@
     const valid = () => !stopped && !task.cancelled && !document.hidden && isDraftPage()
       && location.href === task.url && target.isConnected && target === button;
     function deferToPopup() {
-      const blocked = [...document.querySelectorAll(POPUPS)].some(popup =>
-        popup !== task.menu && popup !== task.submenu && visible(popup));
+      const blocked = popupOpen(task.menu, task.submenu);
       if (blocked) {
         task.blockedByPopup = true;
         task.cancelled = true;
@@ -359,7 +372,7 @@
       const thinking = await waitFor(() => {
         task.menu = maskMenu(target);
         if (task.menu) markPointerFocus();
-        const option = visible(task.menu) && menuItems(task.menu).find(thinkingOption);
+        const option = visible(task.menu) && findMenuOption(task.menu, thinkingOption);
         if (option) task.submenu = controlledMenu(option);
         return option;
       });
@@ -370,7 +383,7 @@
       thinking.click();
       const option = await waitFor(() => {
         task.submenu = maskMenu(thinking);
-        return visible(task.submenu) && menuItems(task.submenu).find(matchesLevel);
+        return visible(task.submenu) && findMenuOption(task.submenu, matchesLevel);
       });
       if (!option || !canContinue()
         || !ownedOption(thinking, target, task.menu, thinkingOption)
@@ -469,8 +482,18 @@
     if (enabled(button) && !popupOpen()) void setLevel(button, desiredLevel);
   }
 
+  function updatePolling() {
+    const needsPolling = !document.hidden && (draftPage || !navigation);
+    if (needsPolling && interval === undefined) interval = setInterval(tick, 1000);
+    else if (!needsPolling && interval !== undefined) {
+      clearInterval(interval);
+      interval = undefined;
+    }
+  }
+
   function visibilityChanged() {
-    clearInterval(interval);
+    syncDraftPage();
+    updatePolling();
     if (document.hidden) {
       discovery.disconnect();
       if (run) {
@@ -484,7 +507,6 @@
     if (isDraftPage() && !button && Date.now() < discoveryDeadline) {
       discovery.observe(document, { childList: true, subtree: true });
     }
-    interval = setInterval(tick, 1000);
     schedule();
   }
 
@@ -492,9 +514,9 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('click', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
-  window.navigation?.addEventListener('currententrychange', schedule);
+  navigation?.addEventListener('currententrychange', schedule);
   window[INSTANCE] = {
-    version: '1.6.0',
+    version: '1.6.1',
     stop() {
       stopped = true;
       if (run) {
@@ -510,7 +532,7 @@
       document.removeEventListener('keydown', interact, true);
       document.removeEventListener('click', interact, true);
       document.removeEventListener('visibilitychange', visibilityChanged);
-      window.navigation?.removeEventListener('currententrychange', schedule);
+      navigation?.removeEventListener('currententrychange', schedule);
     },
   };
   visibilityChanged();
