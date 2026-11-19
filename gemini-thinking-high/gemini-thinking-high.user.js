@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.5.2
-// @description  Keep Gemini's thinking setting fixed while preserving its remembered model.
+// @version      1.5.3
+// @description  Default Gemini's thinking to Medium while respecting manual choices and the remembered model.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
 // @grant        none
@@ -16,6 +16,7 @@
 
   const PICKER = 'button[data-test-id="bard-mode-menu-button"]';
   const POPUPS = '[role="menu"], [role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]';
+  const RADIO_ITEM = '[role="menuitemradio"]';
   const THINKING = /^(Thinking level|思考程度|思考層級|思考等级|思考级别)$/i;
   const MEDIUM = /^(Medium|中等|中度|中)(?:\s|$)/i;
   const MEDIUM_LABEL = /(?:^|\s)(Medium|中等|中度|中)\s*$/i;
@@ -35,6 +36,7 @@
   let pauseUntil = 0;
   let retryAt = 0;
   let failures = 0;
+  let manualOverride = false;
   let keyboardInput = false;
   let pointerStyle;
   const focusMarkers = new Set();
@@ -49,7 +51,7 @@
     const id = trigger.getAttribute('aria-controls');
     return id ? document.getElementById(id) : null;
   };
-  const menuItems = menu => [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')]
+  const menuItems = menu => [...menu.querySelectorAll('[role="menuitem"], ' + RADIO_ITEM)]
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const thinkingOption = item => ['menuitem', 'menuitemradio'].includes(item.getAttribute('role'))
     && THINKING.test(text(item));
@@ -87,17 +89,37 @@
     });
   }
 
+  function manualThinkingOption(target) {
+    const option = target.closest?.(RADIO_ITEM);
+    const submenu = option?.closest('[role="menu"]');
+    if (!submenu) return null;
+    const picker = button?.isConnected ? button : document.querySelector(PICKER);
+    const menu = picker && controlledMenu(picker);
+    if (!menu || menu === submenu || !enabled(option)) return null;
+    return menuItems(menu).some(item => thinkingOption(item) && controlledMenu(item) === submenu) ? option : null;
+  }
+
   function interact(event) {
     if (!event.isTrusted) return;
-    keyboardInput = event.type === 'keydown';
-    if (keyboardInput) clearPointerFocus();
-    else if (button && (button.contains(event.target)
-      || [...focusMarkers].some(element => element.contains(event.target)))) markPointerFocus();
+    let thinkingChoice;
+    if (event.type === 'click') {
+      // Capture the actual choice before Gemini closes the menu. Native key
+      // activation also produces a trusted click; our own .click() does not.
+      thinkingChoice = manualThinkingOption(event.target);
+      if (!thinkingChoice) return;
+      manualOverride = !mediumOption(thinkingChoice);
+      key = '';
+    } else {
+      keyboardInput = event.type === 'keydown';
+      if (keyboardInput) clearPointerFocus();
+      else if (button && (button.contains(event.target)
+        || [...focusMarkers].some(element => element.contains(event.target)))) markPointerFocus();
+    }
     pauseUntil = Date.now() + 1500;
     if (run) {
       unmute(run);
       // Do not close a menu the user has started interacting with.
-      run.userOwnsMenu = event.target === run.button || run.button.contains(event.target)
+      run.userOwnsMenu = Boolean(thinkingChoice) || run.button.contains(event.target)
         || run.menu?.contains(event.target) || run.submenu?.contains(event.target);
       run.cancelled = true;
       run.cancelWait?.();
@@ -371,14 +393,16 @@
       }
       return;
     }
-    const nextKey = location.href + '\n' + label(button);
+    if (manualOverride) return;
+    const currentLabel = label(button);
+    const nextKey = location.href + '\n' + currentLabel;
     if (nextKey !== key) {
       key = nextKey;
       failures = 0;
       retryAt = 0;
     }
     // No layout reads or menu scans on the common, already-Medium path.
-    if (MEDIUM_LABEL.test(label(button)) || failures >= 3) return;
+    if (MEDIUM_LABEL.test(currentLabel) || failures >= 3) return;
     if (Date.now() < pauseUntil || Date.now() < retryAt) return;
     if (enabled(button) && !popupOpen()) void setMedium(button);
   }
@@ -404,9 +428,10 @@
 
   document.addEventListener('pointerdown', interact, true);
   document.addEventListener('keydown', interact, true);
+  document.addEventListener('click', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.5.2',
+    version: '1.5.3',
     stop() {
       stopped = true;
       if (run) {
@@ -420,6 +445,7 @@
       clearPointerFocus();
       document.removeEventListener('pointerdown', interact, true);
       document.removeEventListener('keydown', interact, true);
+      document.removeEventListener('click', interact, true);
       document.removeEventListener('visibilitychange', visibilityChanged);
     },
   };

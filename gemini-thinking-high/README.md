@@ -1,6 +1,6 @@
 # Gemini — Fixed Thinking
 
-Automatically select **Thinking level → Medium** while preserving Gemini's remembered model.
+Default to **Thinking level → Medium** while preserving Gemini's remembered model and respecting manual choices.
 
 ## Install
 
@@ -12,9 +12,9 @@ If you already have **Gemini — Always High Thinking**, check for updates from 
 
 ## Behavior
 
-- Reapplies Medium after reloads, SPA navigation, model changes, and same-URL thinking-level resets.
+- Applies Medium on page load and reapplies it after navigation, model changes, and thinking-level resets while the default is active.
 - Never selects a model, submits a prompt, calls private APIs, or sends network requests.
-- Manually selecting Low or High will be followed by an automatic switch back to Medium. Disable the script to use a different level.
+- Selecting another thinking level pauses automatic switching in the current tab, including when Gemini navigates within the tab. Reload the page or select Medium manually to resume the default.
 - Runs at document start and applies Medium as soon as Gemini's picker is ready.
 - Masks the picker’s own overlays from the start of the switch through closing. It preserves the picker’s background and hover layer and disables temporary ripple and arrow animations. After applying Medium, it keeps the mask in place until the overlay and pressed state clear or the cleanup timeout expires.
 - Returns focus to the previously focused control or clears the focus introduced by the menu. The picker suppresses Material's ring and the separate fill from delayed programmatic focus. Hover and keyboard focus keep their normal styling. The focus override clears on keyboard input, picker replacement, or script stop.
@@ -37,6 +37,6 @@ node --test gemini-thinking-high/test.mjs
 node --check gemini-thinking-high/gemini-thinking-high.user.js
 ```
 
-The 49 tests exercise startup, navigation, retry limits, user interaction, and shell cleanup with a simulated accessible menu and clock. Startup regressions cover ignored clicks, Medium being reset during cleanup, and the picker becoming enabled after the attempt budget is spent. A closure regression keeps the mask applied until the picker’s delayed pressed state clears.
+The tests exercise startup, navigation, retry limits, user interaction, and shell cleanup with a simulated accessible menu and clock. They also check that a manual choice survives inactivity, tab visibility changes, and picker replacement, and that manually choosing Medium resumes the default.
 
 Open `browser-qa.html` directly in Edge to run eleven network-free transition scenarios. They sample animation frames during switching and cleanup, including when the overlay appears before its menu content, the pressed class survives menu closure, or programmatic focus arrives after cleanup. They also verify the Medium selection, model preservation, and restoration of manual styles. `browser-test.html` runs the standard scenario.

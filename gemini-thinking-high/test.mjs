@@ -38,8 +38,8 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
     },
     documentElement: { append(style) { stats.styles.add(style); } },
   };
-  function emit(type, target = document.body) {
-    for (const listener of listeners.get(type) || []) listener({ type, isTrusted: true, target });
+  function emit(type, target = document.body, isTrusted = true) {
+    for (const listener of listeners.get(type) || []) listener({ type, isTrusted, target });
   }
   class Element {
     constructor(attrs = {}, parent = null) {
@@ -72,7 +72,8 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
     }
     get parentElement() { return this.parent; }
     closest(selector) {
-      const matches = selector === '[role="menu"]' ? this.attrs.role === 'menu'
+      const role = /^\[role="([^"]+)"\]$/.exec(selector)?.[1];
+      const matches = role ? this.attrs.role === role
         : selector.split(',').some(part => (this.attrs.class || '').split(' ').includes(part.trim().slice(1)));
       return matches ? this : this.parent?.closest(selector) || null;
     }
@@ -114,6 +115,8 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
   thinking.textContent = ' Thinking level ';
   const medium = new Element({ role: 'menuitemradio' }, submenu);
   medium.textContent = ' Medium Balanced depth ';
+  const high = new Element({ role: 'menuitemradio' }, submenu);
+  const highLabel = new Element({}, high);
   const originalVisible = thinking.checkVisibility.bind(thinking);
   thinking.checkVisibility = () => state.thinkingReady && originalVisible();
   const originalMediumVisible = medium.checkVisibility.bind(medium);
@@ -127,8 +130,9 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
     if (state.detachMenuOnClose) root.isConnected = false;
     picker.setAttribute('aria-expanded', 'false');
   }
-  function setLabel(isMedium) {
-    picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (isMedium ? ' Medium' : ''));
+  function setLabel(isMedium, otherLevel = '') {
+    const level = isMedium ? 'Medium' : otherLevel;
+    picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (level ? ' ' + level : ''));
     medium.setAttribute('aria-checked', String(isMedium));
   }
   function wirePicker() {
@@ -232,12 +236,13 @@ function harness({ initialMedium = false, thinkingReady = true, mediumReady = tr
   const start = () => vm.runInContext(source, context);
   start();
   return {
-    stats, state, location, document, root, shell, submenu, thinking, medium, dialog, timers,
+    stats, state, location, document, root, shell, submenu, thinking, medium, highLabel, model, dialog, timers,
     advance, start, emit, close, setLabel, observers,
     mutate(element) {
       notify(element, { type: 'childList' });
     },
     isMedium: () => / Medium$/.test(picker.attrs['aria-label']),
+    isHigh: () => / High$/.test(picker.attrs['aria-label']),
     marker: () => picker.getAttribute('data-gemini-high-auto-switch'),
     picker: () => picker,
     control: () => new Element(),
@@ -265,7 +270,7 @@ test('selects Medium without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.5.2');
+  assert.equal(h.version(), '1.5.3');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -288,6 +293,77 @@ test('recovers from same-URL resets, SPA navigation, and picker replacement', as
   await h.advance(2500);
   assert.equal(h.isMedium(), true);
   assert.equal(h.stats.modelClicks, 0);
+});
+
+test('respects a manual High selection after inactivity and tab visibility changes', async () => {
+  const h = harness({ initialMedium: true });
+  await h.advance(0);
+  h.picker().click();
+  h.thinking.click();
+  h.emit('click', h.highLabel);
+  h.setLabel(false, 'High');
+  h.close();
+  await h.advance(60_000);
+  assert.equal(h.isHigh(), true);
+  h.document.hidden = true;
+  h.emit('visibilitychange');
+  h.document.hidden = false;
+  h.emit('visibilitychange');
+  h.location.href += '/new-chat-id';
+  h.replacePicker();
+  h.setLabel(false, 'High');
+  await h.advance(60_000);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.mediumClicks.length, 0);
+});
+
+test('manually selecting Medium resumes the default after subsequent Gemini resets', async () => {
+  const h = harness({ initialMedium: true });
+  await h.advance(0);
+  h.picker().click();
+  h.thinking.click();
+  h.emit('click', h.highLabel);
+  h.setLabel(false, 'High');
+  h.close();
+  await h.advance(3000);
+  assert.equal(h.isHigh(), true);
+  h.picker().click();
+  h.thinking.click();
+  h.emit('click', h.medium);
+  h.setLabel(true);
+  h.close();
+  h.setLabel(false);
+  await h.advance(3000);
+  assert.equal(h.isMedium(), true);
+});
+
+test('model clicks and untrusted thinking clicks do not override Medium', async () => {
+  const h = harness({ initialMedium: true });
+  await h.advance(0);
+  h.picker().click();
+  h.emit('click', h.model);
+  h.thinking.click();
+  h.emit('click', h.highLabel, false);
+  h.state.model = 'Neon';
+  h.setLabel(false);
+  h.close();
+  await h.advance(3000);
+  assert.equal(h.isMedium(), true);
+  assert.match(h.picker().getAttribute('aria-label'), /Neon Medium$/);
+});
+
+test('a trusted thinking click takes over a pending automatic switch', async () => {
+  const h = harness({ mediumReady: false });
+  await h.advance(0);
+  assert.equal(h.submenu.shown, true);
+  h.emit('click', h.highLabel);
+  h.setLabel(false, 'High');
+  h.close();
+  h.state.mediumReady = true;
+  await h.advance(60_000);
+  assert.equal(h.isHigh(), true);
+  assert.equal(h.stats.mediumClicks.length, 0);
+  assert.equal(h.autoStyleCount(), 0);
 });
 
 test('retries a transiently missing Thinking level control', async () => {
