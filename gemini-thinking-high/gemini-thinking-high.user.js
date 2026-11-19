@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gemini — Always High Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.4.5
-// @description  Keep Gemini's remembered model; automatically set its thinking level to High.
+// @version      1.5.0
+// @description  Keep Gemini's remembered model; automatically set its thinking level to Medium.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
 // @grant        none
@@ -17,11 +17,12 @@
   const PICKER = 'button[data-test-id="bard-mode-menu-button"]';
   const POPUPS = '[role="menu"], [role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]';
   const THINKING = /^(Thinking level|思考程度|思考層級|思考等级|思考级别)$/i;
-  const HIGH = /^(High|高|高等)(?:\s|$)/i;
-  const HIGH_LABEL = /(?:^|\s)(High|高|高等)\s*$/i;
+  const MEDIUM = /^(Medium|中等|中度|中)(?:\s|$)/i;
+  const MEDIUM_LABEL = /(?:^|\s)(Medium|中等|中度|中)\s*$/i;
   const INSTANCE = '__geminiAlwaysHighThinking';
   const AUTO_SWITCH = 'data-gemini-high-auto-switch';
   const MENU_MASK = 'data-gemini-high-menu-mask';
+  const MENU_WRAPPERS = '.popover-menu, .submenu-container, .cdk-overlay-pane, .cdk-overlay-popover';
   const POINTER_FOCUS = 'data-gemini-high-pointer-focus';
   if (typeof window[INSTANCE]?.stop === 'function') window[INSTANCE].stop();
 
@@ -52,7 +53,7 @@
     .filter(item => item.closest('[role="menu"]') === menu && enabled(item));
   const thinkingOption = item => ['menuitem', 'menuitemradio'].includes(item.getAttribute('role'))
     && THINKING.test(text(item));
-  const highOption = item => item.getAttribute('role') === 'menuitemradio' && HIGH.test(text(item));
+  const mediumOption = item => item.getAttribute('role') === 'menuitemradio' && MEDIUM.test(text(item));
   const ownedOption = (item, trigger, menu, matches) => enabled(trigger) && enabled(item)
     && visible(menu) && controlledMenu(trigger) === menu
     && item.closest('[role="menu"]') === menu && matches(item);
@@ -150,7 +151,7 @@
     }
   }
 
-  async function setHigh(target) {
+  async function setMedium(target) {
     const task = { button: target, url: location.href, cancelled: false, userOwnsMenu: false, surfaces: new Map() };
     run = task;
     const focus = document.activeElement;
@@ -174,7 +175,7 @@
       const menu = controlledMenu(trigger);
       // Mark actual surfaces, not only :has(menu): an empty closing shell can
       // keep painting after its content has been hidden, moved, or detached.
-      for (let surface = menu; surface; surface = surface.parentElement?.closest('.popover-menu, .submenu-container, .cdk-overlay-pane')) {
+      for (let surface = menu; surface; surface = surface.parentElement?.closest(MENU_WRAPPERS)) {
         if (!task.surfaces.has(surface)) {
           task.surfaces.set(surface, surface.getAttribute(MENU_MASK));
           surface.setAttribute(MENU_MASK, '');
@@ -185,20 +186,23 @@
         task.maskInitialized = true;
         if (id) maskedMenus.add(id);
         const menus = [...maskedMenus].map(value => '#' + CSS.escape(value) + '[role="menu"]');
-        const boxes = ['[' + MENU_MASK + ']', ...menus.flatMap(menu => [menu, '.popover-menu:has(' + menu + ')',
-          '.submenu-container:has(' + menu + ')', '.cdk-overlay-pane:has(' + menu + ')'])];
+        const picker = '[' + AUTO_SWITCH + ']';
+        const boxes = ['[' + MENU_MASK + ']', ...menus];
+        // Gemini mounts the popover next to its own trigger, before its menu is ready.
+        boxes.push('.pill-ui-logo-container > ' + picker + ' + .cdk-overlay-popover');
+        if (menus.length) boxes.push(':is(' + MENU_WRAPPERS + '):has(' + menus.join(',') + ')');
         task.style.textContent = boxes.join(',')
           + ' { clip-path: inset(50%) !important; pointer-events: none !important; animation: none !important; transition: none !important; }'
-          + [...menus, ...menus.map(menu => menu + ' *'), '[' + AUTO_SWITCH + ']', '[' + AUTO_SWITCH + '] *'].join(',')
+          + [...menus, ...menus.map(menu => menu + ' *'), picker, picker + ' *',
+            picker + '::before', picker + '::after', picker + ' *::before', picker + ' *::after'].join(',')
           + ' { animation: none !important; transition: none !important; }'
-          + '[' + AUTO_SWITCH + '] .dropdown-icon { transform: none !important; }'
-          + '[' + AUTO_SWITCH + '] { outline: none !important; box-shadow: none !important; background-color: '
-          + task.background + ' !important; }'
-          + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before, [' + AUTO_SWITCH + '] .mdc-button__ripple::after,'
-          + '[' + AUTO_SWITCH + '] .mat-ripple, [' + AUTO_SWITCH + '] .mat-mdc-button-ripple,'
-          + '[' + AUTO_SWITCH + '] .mat-focus-indicator::before,'
-          + '[' + AUTO_SWITCH + '] .mat-mdc-focus-indicator::before { opacity: 0 !important; }'
-          + '[' + AUTO_SWITCH + '] .mdc-button__ripple::before { opacity: ' + task.rippleOpacity + ' !important; }';
+          + picker + ' .dropdown-icon { transform: none !important; }'
+          + picker + ' { outline: none !important; box-shadow: none !important; background-color: '
+          + task.background + ' !important; background-image: ' + task.backgroundImage + ' !important; }'
+          + [' .mdc-button__ripple::after', ' .mat-ripple', ' .mat-mdc-button-ripple',
+            ' .mat-focus-indicator::before', ' .mat-mdc-focus-indicator::before'].map(suffix => picker + suffix).join(',')
+          + ' { opacity: 0 !important; }'
+          + picker + ' .mdc-button__ripple::before { opacity: ' + task.rippleOpacity + ' !important; }';
       }
       return menu;
     }
@@ -243,10 +247,12 @@
       });
     }
     try {
-      // All clicks are limited to the picker, its Thinking level trigger, and High.
+      // All clicks are limited to the picker, its Thinking level trigger, and Medium.
       if (!valid() || !enabled(target) || popupOpen()) return;
       markPointerFocus();
-      task.background = getComputedStyle(target).backgroundColor;
+      const pickerStyle = getComputedStyle(target);
+      task.background = pickerStyle.backgroundColor;
+      task.backgroundImage = pickerStyle.backgroundImage;
       const ripple = target.querySelector('.mdc-button__ripple');
       task.rippleOpacity = ripple ? getComputedStyle(ripple, '::before').opacity : '0';
       // Clip instead of hiding with display/visibility/opacity, so menu readiness
@@ -281,19 +287,19 @@
       // A successful probe can become stale before the awaited continuation.
       if (!canContinue() || !ownedOption(thinking, target, task.menu, thinkingOption)) return;
       thinking.click();
-      const high = await waitFor(() => {
+      const medium = await waitFor(() => {
         task.submenu = maskMenu(thinking);
-        return visible(task.submenu) && menuItems(task.submenu).find(highOption);
+        return visible(task.submenu) && menuItems(task.submenu).find(mediumOption);
       });
-      if (!high || !canContinue()
+      if (!medium || !canContinue()
         || !ownedOption(thinking, target, task.menu, thinkingOption)
-        || !ownedOption(high, thinking, task.submenu, highOption)) return;
-      if (high.getAttribute('aria-checked') !== 'true') high.click();
-      confirmed = await waitFor(() => HIGH_LABEL.test(label(target)));
+        || !ownedOption(medium, thinking, task.submenu, mediumOption)) return;
+      if (medium.getAttribute('aria-checked') !== 'true') medium.click();
+      confirmed = await waitFor(() => MEDIUM_LABEL.test(label(target)));
       if (!canContinue()) return;
-      if (!confirmed && valid()) console.warn('[Gemini Always High] High was not confirmed.');
+      if (!confirmed && valid()) console.warn('[Gemini Thinking] Medium was not confirmed.');
     } catch (error) {
-      console.warn('[Gemini Always High]', error);
+      console.warn('[Gemini Thinking]', error);
     } finally {
       try {
         // A popup may also arrive after timeout/cancellation, before cleanup.
@@ -302,9 +308,10 @@
         const ownsMenu = task.menu && controlledMenu(target) === task.menu;
         if (!task.userOwnsMenu && !task.blockedByPopup && enabled(target) && ownsMenu && visible(task.menu)
           && target.getAttribute('aria-expanded') === 'true') target.click();
-        // Keep closing animations clipped too, without delaying the High setting.
-        if (valid() && (ownsMenu || target.getAttribute('aria-expanded') === 'false') && !task.userOwnsMenu) {
-          await waitFor(() => [...task.surfaces.keys()].every(surface => !visible(surface)), 300);
+        // Closing the menu and clearing the pressed background can happen in different frames.
+        if (valid() && (ownsMenu || target.getAttribute('aria-expanded') !== 'true') && !task.userOwnsMenu) {
+          await waitFor(() => !target.classList.contains('pressed')
+            && [...task.surfaces.keys()].every(surface => !visible(surface)), 300);
         }
         const active = document.activeElement;
         if (valid() && ownsMenu && (active === target || task.menu?.contains(active) || task.submenu?.contains(active))) {
@@ -316,13 +323,13 @@
           }
         }
       } catch (error) {
-        console.warn('[Gemini Always High] Menu cleanup failed:', error);
+        console.warn('[Gemini Thinking] Menu cleanup failed:', error);
       } finally {
         try { unmute(task); }
         finally {
           if (valid()) {
-            // Check after closing: startup can overwrite a just-confirmed High.
-            const applied = HIGH_LABEL.test(label(target));
+            // Check after closing: startup can overwrite a just-confirmed Medium.
+            const applied = MEDIUM_LABEL.test(label(target));
             const quickRetry = failures === 0 && (retrySoon || confirmed);
             failures = applied ? 0 : failures + 1;
             retryAt = applied || quickRetry ? 0 : Date.now() + 5000;
@@ -367,10 +374,10 @@
       failures = 0;
       retryAt = 0;
     }
-    // No layout reads or menu scans on the common, already-High path.
-    if (HIGH_LABEL.test(label(button)) || failures >= 3) return;
+    // No layout reads or menu scans on the common, already-Medium path.
+    if (MEDIUM_LABEL.test(label(button)) || failures >= 3) return;
     if (Date.now() < pauseUntil || Date.now() < retryAt) return;
-    if (enabled(button) && !popupOpen()) void setHigh(button);
+    if (enabled(button) && !popupOpen()) void setMedium(button);
   }
 
   function visibilityChanged() {
@@ -396,7 +403,7 @@
   document.addEventListener('keydown', interact, true);
   document.addEventListener('visibilitychange', visibilityChanged);
   window[INSTANCE] = {
-    version: '1.4.5',
+    version: '1.5.0',
     stop() {
       stopped = true;
       if (run) {

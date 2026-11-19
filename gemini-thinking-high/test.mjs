@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('./gemini-thinking-high.user.js', import.meta.url), 'utf8');
 
 // Exercise the real userscript against a small accessible-menu DOM and fake clock.
-function harness({ initialHigh = false, thinkingReady = true, highReady = true } = {}) {
+function harness({ initialMedium = false, thinkingReady = true, mediumReady = true } = {}) {
   let now = 0;
   let sequence = 0;
   const timers = new Map();
@@ -15,8 +15,8 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   function notify(target, record) {
     for (const observer of observers) observer.notify(target, record);
   }
-  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, highClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
-  const state = { model: 'Hydrogen', thinkingReady, highReady, cleanupThrows: false };
+  const stats = { layoutReads: 0, pickerQueries: 0, menuQueries: 0, pickerClicks: 0, thinkingClicks: 0, modelClicks: 0, warnings: [], styles: new Set(), mutedOpens: 0, mediumClicks: [], markedOpens: 0, arrowMutedOpens: 0 };
+  const state = { model: 'Hydrogen', thinkingReady, mediumReady, cleanupThrows: false };
   const location = { href: 'https://gemini.google.com/app' };
   const document = {
     hidden: false,
@@ -67,6 +67,9 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
       return this.shown && (!this.parent || this.parent.checkVisibility());
     }
     matches() { return this.attrs.disabled || this.attrs['aria-disabled'] === 'true'; }
+    get classList() {
+      return { contains: name => (this.attrs.class || '').split(' ').includes(name) };
+    }
     get parentElement() { return this.parent; }
     closest(selector) {
       const matches = selector === '[role="menu"]' ? this.attrs.role === 'menu'
@@ -109,22 +112,24 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   model.click = () => { stats.modelClicks++; };
   const thinking = new Element({ role: 'menuitem', 'aria-controls': 'thinking-menu' }, root);
   thinking.textContent = ' Thinking level ';
-  const high = new Element({ role: 'menuitemradio' }, submenu);
-  high.textContent = ' High Extra thorough ';
+  const medium = new Element({ role: 'menuitemradio' }, submenu);
+  medium.textContent = ' Medium Balanced depth ';
   const originalVisible = thinking.checkVisibility.bind(thinking);
   thinking.checkVisibility = () => state.thinkingReady && originalVisible();
-  const originalHighVisible = high.checkVisibility.bind(high);
-  high.checkVisibility = () => state.highReady && originalHighVisible();
+  const originalMediumVisible = medium.checkVisibility.bind(medium);
+  medium.checkVisibility = () => state.mediumReady && originalMediumVisible();
   function close() {
     root.shown = submenu.shown = false;
+    if (state.delayedPressedClear) addTimer(() => picker.removeAttribute('class'), 120);
+    else picker.removeAttribute('class');
     if (state.delayedShellClose) addTimer(() => { shell.shown = false; }, 180);
     else shell.shown = false;
     if (state.detachMenuOnClose) root.isConnected = false;
     picker.setAttribute('aria-expanded', 'false');
   }
-  function setLabel(isHigh) {
-    picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (isHigh ? ' High' : ''));
-    high.setAttribute('aria-checked', String(isHigh));
+  function setLabel(isMedium) {
+    picker.setAttribute('aria-label', 'Open mode picker, currently ' + state.model + (isMedium ? ' Medium' : ''));
+    medium.setAttribute('aria-checked', String(isMedium));
   }
   function wirePicker() {
     picker.click = () => {
@@ -143,24 +148,25 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
         if (picker.getAttribute('data-gemini-high-auto-switch') !== null) stats.markedOpens++;
         state.openedFor = location.href;
         shell.shown = root.shown = true;
+        picker.setAttribute('class', 'pressed');
         picker.setAttribute('aria-expanded', 'true');
         document.activeElement = thinking;
       }
     };
   }
-  thinking.click = () => { stats.thinkingClicks++; submenu.shown = true; document.activeElement = high; };
-  high.click = () => {
-    stats.highClicks.push({ openedFor: state.openedFor, url: location.href });
+  thinking.click = () => { stats.thinkingClicks++; submenu.shown = true; document.activeElement = medium; };
+  medium.click = () => {
+    stats.mediumClicks.push({ openedFor: state.openedFor, url: location.href });
     setLabel(true);
-    high.setAttribute('aria-checked', 'true');
+    medium.setAttribute('aria-checked', 'true');
     close();
-    if (state.resetHighOnce) {
-      state.resetHighOnce = false;
+    if (state.resetMediumOnce) {
+      state.resetMediumOnce = false;
       addTimer(() => setLabel(false), 50);
     }
   };
   wirePicker();
-  setLabel(initialHigh);
+  setLabel(initialMedium);
   function addTimer(callback, delay, repeat = 0) {
     const id = ++sequence;
     timers.set(id, { callback, at: now + delay, repeat });
@@ -170,7 +176,7 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const context = vm.createContext({
     window, document, location,
     queueMicrotask,
-    getComputedStyle: () => ({ backgroundColor: 'rgba(0, 0, 0, 0)' }),
+    getComputedStyle: () => ({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none' }),
     CSS: { escape: value => value }, // Fixture IDs are already valid CSS identifiers.
     Date: { now: () => now },
     console: { warn: (...args) => stats.warnings.push(args) },
@@ -226,12 +232,12 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   const start = () => vm.runInContext(source, context);
   start();
   return {
-    stats, state, location, document, root, shell, submenu, thinking, high, dialog, timers,
+    stats, state, location, document, root, shell, submenu, thinking, medium, dialog, timers,
     advance, start, emit, close, setLabel, observers,
     mutate(element) {
       notify(element, { type: 'childList' });
     },
-    isHigh: () => / High$/.test(picker.attrs['aria-label']),
+    isMedium: () => / Medium$/.test(picker.attrs['aria-label']),
     marker: () => picker.getAttribute('data-gemini-high-auto-switch'),
     picker: () => picker,
     control: () => new Element(),
@@ -250,21 +256,21 @@ function harness({ initialHigh = false, thinkingReady = true, highReady = true }
   };
 }
 
-test('selects High without clicking a model option', async () => {
+test('selects Medium without clicking a model option', async () => {
   const h = harness();
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.stats.modelClicks, 0);
   assert.equal(h.root.shown, false);
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.4.5');
+  assert.equal(h.version(), '1.5.0');
   assert.equal(h.autoStyleCount(), 0);
 });
 
-test('already-High idle path performs no layout reads or repeated picker queries', async () => {
-  const h = harness({ initialHigh: true });
+test('already-Medium idle path performs no layout reads or repeated picker queries', async () => {
+  const h = harness({ initialMedium: true });
   await h.advance(60_000);
   assert.equal(h.stats.layoutReads, 0);
   assert.equal(h.stats.pickerQueries, 1);
@@ -275,12 +281,12 @@ test('recovers from same-URL resets, SPA navigation, and picker replacement', as
   await h.advance(2500);
   h.setLabel(false);
   await h.advance(2500);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   h.state.model = 'Argon';
   h.location.href += '/existing-chat';
   h.replacePicker();
   await h.advance(2500);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.stats.modelClicks, 0);
 });
 
@@ -290,7 +296,7 @@ test('retries a transiently missing Thinking level control', async () => {
   assert.equal(h.root.shown, false);
   h.state.thinkingReady = true;
   await h.advance(7000);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
 });
 
 test('limits unsupported controls to three attempts', async () => {
@@ -300,20 +306,20 @@ test('limits unsupported controls to three attempts', async () => {
   assert.equal(h.stats.mutedOpens, 3);
   await h.advance(40_000);
   assert.equal(h.stats.layoutReads, reads);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
   assert.equal(h.autoStyleCount(), 0);
 });
 
-test('cancels stale-route work without clicking High', async () => {
-  const h = harness({ highReady: false });
+test('cancels stale-route work without clicking Medium', async () => {
+  const h = harness({ mediumReady: false });
   await h.advance(1500);
   assert.equal(h.submenu.shown, true);
   h.location.href += '/another-chat';
-  h.state.highReady = true;
+  h.state.mediumReady = true;
   await h.advance(100);
-  assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.highClicks.length, 1);
-  assert.equal(h.stats.highClicks[0].openedFor, h.location.href);
+  assert.equal(h.isMedium(), true);
+  assert.equal(h.stats.mediumClicks.length, 1);
+  assert.equal(h.stats.mediumClicks[0].openedFor, h.location.href);
   assert.equal(h.root.shown, false);
 });
 
@@ -331,7 +337,7 @@ test('leaves user menus and dialogs alone; defers while typing', async () => {
   await h.advance(1200);
   assert.equal(h.root.shown, false);
   await h.advance(2000);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
 });
 
 test('user takeover cancels automation without closing their menu', async () => {
@@ -347,7 +353,7 @@ test('user takeover cancels automation without closing their menu', async () => 
   assert.equal(h.submenu.shown, false);
   h.close();
   await h.advance(2500);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -355,11 +361,11 @@ test('detects the initial picker in the same turn without a polling delay', asyn
   const h = harness();
   h.state.pickerMissing = true;
   await h.advance(0);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
   h.state.pickerMissing = false;
   h.mutate(h.document);
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.ok([...h.observers].every(observer => !observer.targets.has(h.document)));
 });
 
@@ -370,23 +376,23 @@ test('startup discovery stops on pages without a picker', async () => {
   assert.ok([...h.observers].every(observer => !observer.targets.has(h.document)));
   h.state.pickerMissing = false;
   await h.advance(1000);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
 });
 
 test('menu mutations wake a pending switch without waiting for its fallback timer', async () => {
-  const h = harness({ highReady: false });
+  const h = harness({ mediumReady: false });
   await h.advance(0);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
   assert.equal(h.autoStyleCount(), 1);
-  h.state.highReady = true;
+  h.state.mediumReady = true;
   h.mutate(h.submenu);
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.autoStyleCount(), 0);
 });
 
 test('stopping in the middle of a switch immediately removes styles and wait timers', async () => {
-  const h = harness({ highReady: false });
+  const h = harness({ mediumReady: false });
   await h.advance(0);
   assert.equal(h.autoStyleCount(), 1);
   h.stop();
@@ -395,11 +401,11 @@ test('stopping in the middle of a switch immediately removes styles and wait tim
   assert.equal(h.timers.size, 0);
   await h.advance(0);
   assert.equal(h.root.shown, false);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
 });
 
 test('hidden tabs stop their interval and resume when shown', async () => {
-  const h = harness({ initialHigh: true });
+  const h = harness({ initialMedium: true });
   await h.advance(2500);
   h.document.hidden = true;
   h.emit('visibilitychange');
@@ -410,7 +416,7 @@ test('hidden tabs stop their interval and resume when shown', async () => {
   h.document.hidden = false;
   h.emit('visibilitychange');
   await h.advance(2500);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
 });
 
 test('cleanup exceptions release the running guard', async () => {
@@ -422,11 +428,11 @@ test('cleanup exceptions release the running guard', async () => {
   h.state.thinkingReady = true;
   h.close();
   await h.advance(7000);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
 });
 
 test('reinjection disposes the previous instance; stop clears all observers and timers', async () => {
-  const h = harness({ initialHigh: true });
+  const h = harness({ initialMedium: true });
   await h.advance(2500);
   h.start();
   await h.advance(2500);
@@ -437,7 +443,7 @@ test('reinjection disposes the previous instance; stop clears all observers and 
   h.emit('visibilitychange');
   await h.advance(5000);
   assert.equal(h.timers.size, 0);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
 });
 
 test('startup does not leave focus on the picker or hidden menu items', async () => {
@@ -465,7 +471,7 @@ test('pointer focus suppression is scoped and keyboard input immediately restore
   assert.equal(h.stats.styles.size, 0);
   h.setLabel(false);
   await h.advance(2500);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.pointerMarked().length, 0);
   h.emit('pointerdown', h.picker());
   assert.ok(h.pointerMarked().includes(h.picker()));
@@ -493,23 +499,23 @@ test('picker visuals are muted even when menu IDs are assigned only on open', as
   h.dialog.setAttribute('id', 'null'); // Native getElementById(null) coerces to this ID.
   h.picker().removeAttribute('aria-controls');
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.stats.arrowMutedOpens, 1);
   assert.equal(h.marker(), null);
   assert.equal(h.dialog.getAttribute('data-gemini-high-pointer-focus'), null);
 });
 
 test('reinjection during a pending switch cancels queued observers and the old run', async () => {
-  const h = harness({ highReady: false });
+  const h = harness({ mediumReady: false });
   await h.advance(0);
   h.picker().setAttribute('aria-disabled', 'false'); // Queued observer delivery.
   h.start();
   await h.advance(0);
-  h.state.highReady = true;
+  h.state.mediumReady = true;
   h.mutate(h.submenu);
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.isMedium(), true);
+  assert.equal(h.stats.mediumClicks.length, 1);
   assert.equal(h.autoStyleCount(), 0);
   h.stop();
   await h.advance(0);
@@ -531,7 +537,7 @@ function afterProbe(element, mutate) {
   };
 }
 
-for (const stage of ['thinking', 'high']) {
+for (const stage of ['thinking', 'medium']) {
   for (const change of ['detach', 'disable', 'move', 'relabel', 'role']) {
     test(`does not click a stale ${stage} option after ${change} between probe and continuation`, async () => {
       const h = harness();
@@ -549,8 +555,8 @@ for (const stage of ['thinking', 'high']) {
         }
       });
       await h.advance(0);
-      assert.equal(stage === 'high' ? h.stats.highClicks.length : h.stats.thinkingClicks, 0);
-      assert.equal(h.isHigh(), false);
+      assert.equal(stage === 'medium' ? h.stats.mediumClicks.length : h.stats.thinkingClicks, 0);
+      assert.equal(h.isMedium(), false);
       assert.equal(h.autoStyleCount(), 0);
       h.stop();
     });
@@ -559,7 +565,7 @@ for (const stage of ['thinking', 'high']) {
 
 for (const popup of ['dialog', 'alertdialog', 'native-dialog', 'menu']) {
   test(`cancels a pending switch when an unrelated ${popup} appears without stealing focus`, async () => {
-    const h = harness({ highReady: false });
+    const h = harness({ mediumReady: false });
     await h.advance(0);
     const clicks = h.stats.pickerClicks;
     if (popup === 'native-dialog') {
@@ -569,10 +575,10 @@ for (const popup of ['dialog', 'alertdialog', 'native-dialog', 'menu']) {
     } else h.dialog.setAttribute('role', popup);
     h.dialog.shown = true;
     h.dialog.focus();
-    h.state.highReady = true;
+    h.state.mediumReady = true;
     h.mutate(h.submenu);
     await h.advance(0);
-    assert.equal(h.stats.highClicks.length, 0);
+    assert.equal(h.stats.mediumClicks.length, 0);
     assert.equal(h.stats.pickerClicks, clicks); // Cleanup must not click behind the popup either.
     assert.equal(h.document.activeElement, h.dialog);
     assert.equal(h.dialog.shown, true);
@@ -589,21 +595,21 @@ test('recovers promptly when the first picker click is ignored during startup', 
   h.state.ignoredPickerClicks = 1;
   await h.advance(0);
   assert.equal(h.stats.pickerClicks, 1);
-  assert.equal(h.isHigh(), false);
+  assert.equal(h.isMedium(), false);
   await h.advance(1000);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.stats.pickerClicks, 2);
-  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.stats.mediumClicks.length, 1);
   assert.equal(h.autoStyleCount(), 0);
 });
 
-test('retries promptly if initialization resets High during menu cleanup', async () => {
+test('retries promptly if initialization resets Medium during menu cleanup', async () => {
   const h = harness();
   h.state.delayedShellClose = true;
-  h.state.resetHighOnce = true;
+  h.state.resetMediumOnce = true;
   await h.advance(500);
-  assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.highClicks.length, 2);
+  assert.equal(h.isMedium(), true);
+  assert.equal(h.stats.mediumClicks.length, 2);
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -617,11 +623,11 @@ test('re-enabling the picker grants another attempt after the retry budget is sp
   h.state.thinkingReady = true;
   h.picker().removeAttribute('aria-disabled');
   await h.advance(0);
-  assert.equal(h.isHigh(), true);
+  assert.equal(h.isMedium(), true);
   assert.equal(h.stats.mutedOpens, 4);
 });
 
-for (const stage of ['thinking', 'high']) {
+for (const stage of ['thinking', 'medium']) {
   test(`does not click ${stage} if a modal appears after the probe succeeds`, async () => {
     const h = harness();
     afterProbe(h[stage], () => {
@@ -629,7 +635,7 @@ for (const stage of ['thinking', 'high']) {
       h.dialog.focus();
     });
     await h.advance(0);
-    assert.equal(stage === 'high' ? h.stats.highClicks.length : h.stats.thinkingClicks, 0);
+    assert.equal(stage === 'medium' ? h.stats.mediumClicks.length : h.stats.thinkingClicks, 0);
     assert.equal(h.document.activeElement, h.dialog);
     assert.equal(h.stats.pickerClicks, 1);
     assert.equal(h.stats.styles.size, 0);
@@ -638,11 +644,11 @@ for (const stage of ['thinking', 'high']) {
 }
 
 for (const trigger of ['picker', 'thinking']) {
-  test(`rejects High if the ${trigger} no longer controls the probed menu`, async () => {
+  test(`rejects Medium if the ${trigger} no longer controls the probed menu`, async () => {
     const h = harness();
-    afterProbe(h.high, () => (trigger === 'picker' ? h.picker() : h.thinking).removeAttribute('aria-controls'));
+    afterProbe(h.medium, () => (trigger === 'picker' ? h.picker() : h.thinking).removeAttribute('aria-controls'));
     await h.advance(0);
-    assert.equal(h.stats.highClicks.length, 0);
+    assert.equal(h.stats.mediumClicks.length, 0);
     assert.equal(h.autoStyleCount(), 0);
     h.stop();
   });
@@ -650,18 +656,18 @@ for (const trigger of ['picker', 'thinking']) {
 
 test('retries safely after a stale option becomes available again', async () => {
   const h = harness();
-  afterProbe(h.high, () => { h.high.isConnected = false; });
+  afterProbe(h.medium, () => { h.medium.isConnected = false; });
   await h.advance(0);
-  assert.equal(h.stats.highClicks.length, 0);
-  h.high.isConnected = true;
+  assert.equal(h.stats.mediumClicks.length, 0);
+  h.medium.isConnected = true;
   await h.advance(6000);
-  assert.equal(h.isHigh(), true);
-  assert.equal(h.stats.highClicks.length, 1);
+  assert.equal(h.isMedium(), true);
+  assert.equal(h.stats.mediumClicks.length, 1);
   assert.equal(h.stats.modelClicks, 0);
 });
 
 test('cleanup after trusted cancellation leaves a newly opened modal alone', async () => {
-  const h = harness({ highReady: false });
+  const h = harness({ mediumReady: false });
   await h.advance(0);
   const clicks = h.stats.pickerClicks;
   h.dialog.shown = true;
@@ -669,7 +675,7 @@ test('cleanup after trusted cancellation leaves a newly opened modal alone', asy
   h.emit('keydown', h.dialog);
   await h.advance(0);
   assert.equal(h.stats.pickerClicks, clicks);
-  assert.equal(h.stats.highClicks.length, 0);
+  assert.equal(h.stats.mediumClicks.length, 0);
   assert.equal(h.document.activeElement, h.dialog);
   assert.equal(h.stats.styles.size, 0);
   h.stop();
@@ -681,7 +687,7 @@ for (const detached of [false, true]) {
     h.state.delayedShellClose = true;
     h.state.detachMenuOnClose = detached;
     await h.advance(0);
-    assert.equal(h.isHigh(), true);
+    assert.equal(h.isMedium(), true);
     assert.equal(h.shell.shown, true);
     assert.equal(h.autoStyleCount(), 1);
     assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), '');
@@ -717,4 +723,17 @@ test('a popup during closing cancels cleanup without moving its focus', async ()
   assert.equal(h.autoStyleCount(), 0);
   assert.equal(h.shell.getAttribute('data-gemini-high-menu-mask'), null);
   h.stop();
+});
+
+test('keeps the picker masked until the delayed pressed state ends', async () => {
+  const h = harness();
+  h.state.delayedPressedClear = true;
+  await h.advance(0);
+  assert.equal(h.isMedium(), true);
+  assert.equal(h.root.shown, false);
+  assert.equal(h.picker().classList.contains('pressed'), true);
+  assert.equal(h.marker(), '');
+  await h.advance(200);
+  assert.equal(h.marker(), null);
+  assert.equal(h.autoStyleCount(), 0);
 });
