@@ -306,7 +306,7 @@ test('selects Medium without clicking a model option', async () => {
   assert.equal(h.stats.mutedOpens, 1);
   assert.equal(h.stats.markedOpens, 1);
   assert.equal(h.marker(), null);
-  assert.equal(h.version(), '1.6.1');
+  assert.equal(h.version(), '1.6.2');
   assert.equal(h.autoStyleCount(), 0);
 });
 
@@ -429,12 +429,12 @@ test('a trusted thinking click takes over a pending automatic switch', async () 
   assert.equal(h.autoStyleCount(), 0);
 });
 
-test('retries a transiently missing Thinking level control', async () => {
+test('retries a transiently missing Thinking level control at the short retry deadline', async () => {
   const h = harness({ thinkingReady: false });
-  await h.advance(4500);
+  await h.advance(3000);
   assert.equal(h.root.shown, false);
   h.state.thinkingReady = true;
-  await h.advance(7000);
+  await h.advance(400);
   assert.equal(h.isMedium(), true);
 });
 
@@ -567,6 +567,33 @@ test('leaves user menus and dialogs alone; defers while typing', async () => {
   await h.advance(1200);
   assert.equal(h.root.shown, false);
   await h.advance(2000);
+  assert.equal(h.isMedium(), true);
+});
+
+test('resumes at the end of the typing pause without waiting for a polling tick', async () => {
+  const h = harness({ initialMedium: true });
+  await h.advance(200);
+  h.emit('keydown');
+  h.setLabel(false);
+  await h.advance(1499);
+  assert.equal(h.stats.pickerClicks, 0);
+  await h.advance(1);
+  assert.equal(h.isMedium(), true);
+});
+
+test('cancels a scheduled retry when the tab becomes hidden', async () => {
+  const h = harness({ thinkingReady: false });
+  await h.advance(3000);
+  h.document.hidden = true;
+  h.emit('visibilitychange');
+  assert.equal(h.timers.size, 0);
+  const clicks = h.stats.pickerClicks;
+  h.state.thinkingReady = true;
+  await h.advance(5000);
+  assert.equal(h.stats.pickerClicks, clicks);
+  h.document.hidden = false;
+  h.emit('visibilitychange');
+  await h.advance(0);
   assert.equal(h.isMedium(), true);
 });
 
@@ -820,15 +847,15 @@ for (const popup of ['dialog', 'alertdialog', 'native-dialog', 'menu']) {
   });
 }
 
-test('recovers promptly when the first picker click is ignored during startup', async () => {
+test('recovers promptly when two picker clicks are ignored during startup', async () => {
   const h = harness();
-  h.state.ignoredPickerClicks = 1;
+  h.state.ignoredPickerClicks = 2;
   await h.advance(0);
   assert.equal(h.stats.pickerClicks, 1);
   assert.equal(h.isMedium(), false);
-  await h.advance(1000);
+  await h.advance(1200);
   assert.equal(h.isMedium(), true);
-  assert.equal(h.stats.pickerClicks, 2);
+  assert.equal(h.stats.pickerClicks, 3);
   assert.equal(h.stats.mediumClicks.length, 1);
   assert.equal(h.autoStyleCount(), 0);
 });

@@ -101,7 +101,7 @@
   function check(condition, message) { if (!condition) failures.add(message); }
   picker.onclick = () => {
     pickerClicks++;
-    if (scenario === 'startup-retry' && pickerClicks === 1) return;
+    if (scenario === 'startup-retry' && pickerClicks <= 2) return;
     if (scenario === 'opening-shell' && pickerClicks === 1) {
       outerShell.hidden = false;
       picker.classList.add('pressed');
@@ -161,7 +161,7 @@
     if (outerShell) setTimeout(() => { outerShell.hidden = true; }, 120);
     picker.setAttribute('aria-expanded', 'false');
   };
-  const duration = scenario === 'startup-retry' ? 1400 : 900;
+  const duration = scenario === 'startup-retry' ? 1800 : 900;
   const end = performance.now() + duration;
   function sample() {
     // Sample through cleanup too: a successful Medium label is not proof that
@@ -196,7 +196,7 @@
     check(samples > 0, 'automatic switch not sampled');
     if (scenario === 'delayed-focus') check(delayedFocusChecked, 'delayed focus was not checked');
     check(picker.getAttribute('aria-label').endsWith(' Medium'), 'Medium not selected');
-    if (scenario === 'startup-retry') check(pickerClicks === 2, 'startup retry did not open the picker exactly once');
+    if (scenario === 'startup-retry') check(pickerClicks === 3, 'startup retry did not recover from two missed clicks');
     check(modelClicks === 0, 'model changed');
     check(highClicks === 0, 'High selected instead of Medium');
     check(!picker.hasAttribute('data-gemini-high-auto-switch'), 'animation marker leaked');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini — Fixed Thinking
 // @namespace    local.gemini.thinking-high
-// @version      1.6.1
+// @version      1.6.2
 // @description  Remember the thinking level for new chats and let Gemini restore existing conversations.
 // @match        https://gemini.google.com/*
 // @run-at       document-start
@@ -45,6 +45,8 @@
   let key = '';
   let pauseUntil = 0;
   let retryAt = 0;
+  let wakeAt = 0;
+  let wakeTimer;
   let failures = 0;
   let draftPage = isDraftPage();
   let tabLevel = draftPage ? readLevel('sessionStorage') : undefined;
@@ -146,6 +148,19 @@
       scheduled = false;
       tick();
     });
+  }
+
+  function scheduleWake(deadline) {
+    if (deadline === wakeAt) return;
+    clearTimeout(wakeTimer);
+    wakeAt = deadline;
+    if (deadline) {
+      wakeTimer = setTimeout(() => {
+        wakeAt = 0;
+        wakeTimer = undefined;
+        schedule();
+      }, Math.max(0, deadline - Date.now()));
+    }
   }
 
   function manualThinkingOption(target) {
@@ -358,7 +373,7 @@
       target.setAttribute(AUTO_SWITCH, '');
       maskMenu(target);
       target.click();
-      if (failures === 0 && target.getAttribute('aria-expanded') === 'false') {
+      if (target.getAttribute('aria-expanded') === 'false') {
         // Gemini can render the picker before its click handler is ready.
         const opened = await waitFor(() => {
           task.menu = maskMenu(target);
@@ -424,9 +439,10 @@
           if (valid()) {
             // Check after closing: startup can overwrite the just-confirmed level.
             const applied = selected();
-            const quickRetry = failures === 0 && (retrySoon || confirmed);
+            const quickRetry = retrySoon || (failures === 0 && confirmed);
             failures = applied ? 0 : failures + 1;
-            retryAt = applied || quickRetry ? 0 : Date.now() + 5000;
+            if (applied || quickRetry) retryAt = 0;
+            else retryAt = Date.now() + (failures === 1 ? 400 : 5000);
           }
           run = undefined;
           schedule();
@@ -455,7 +471,10 @@
         childList: true, characterData: true, subtree: true,
       });
     }
-    if (!button) return;
+    if (!button) {
+      scheduleWake(0);
+      return;
+    }
     if (run) {
       if (location.href !== run.url) {
         run.cancelled = true;
@@ -470,6 +489,7 @@
     // No layout reads or menu scans when the picker already has its desired level.
     if (!desiredLevel || currentLevel === desiredLevel) {
       key = '';
+      scheduleWake(0);
       return;
     }
     const nextKey = location.href + '\n' + currentLabel;
@@ -478,7 +498,10 @@
       failures = 0;
       retryAt = 0;
     }
-    if (failures >= 3 || Date.now() < pauseUntil || Date.now() < retryAt) return;
+    const deadline = Math.max(pauseUntil, retryAt);
+    const waiting = failures < 3 && Date.now() < deadline;
+    scheduleWake(waiting ? deadline : 0);
+    if (waiting || failures >= 3) return;
     if (enabled(button) && !popupOpen()) void setLevel(button, desiredLevel);
   }
 
@@ -495,6 +518,7 @@
     syncDraftPage();
     updatePolling();
     if (document.hidden) {
+      scheduleWake(0);
       discovery.disconnect();
       if (run) {
         run.cancelled = true;
@@ -516,7 +540,7 @@
   document.addEventListener('visibilitychange', visibilityChanged);
   navigation?.addEventListener('currententrychange', schedule);
   window[INSTANCE] = {
-    version: '1.6.1',
+    version: '1.6.2',
     stop() {
       stopped = true;
       if (run) {
@@ -525,6 +549,7 @@
         unmute(run);
       }
       clearInterval(interval);
+      scheduleWake(0);
       observer.disconnect();
       discovery.disconnect();
       clearPointerFocus();
